@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      1.1.1
+// @version      1.1.2
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.1';
+    const VERSION = '1.1.2';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -2912,6 +2912,11 @@
             
             const panel = document.createElement('div');
             panel.className = 'xhs-panel';
+            // 防止被主题/站点同名样式覆盖导致无法滚动（inline important 优先级最高）
+            try {
+                panel.style.setProperty('display', 'flex', 'important');
+                panel.style.setProperty('flex-direction', 'column', 'important');
+            } catch {}
             
             const render = () => {
                 const prevScrollTop = (() => {

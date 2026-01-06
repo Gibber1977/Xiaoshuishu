@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.0';
+    const VERSION = '1.1';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -422,8 +422,10 @@
 
                 /* 设置面板 */
                 .xhs-panel-overlay {
-                    position: fixed; inset: 0; background: rgba(0,0,0,0.4); 
+                    position: fixed; inset: 0; background: rgba(0,0,0,0.45);
                     z-index: 99998; display: none; opacity: 0; transition: opacity 0.3s;
+                    overscroll-behavior: contain;
+                    backdrop-filter: blur(6px) saturate(120%);
                 }
                 .xhs-panel-overlay.show { display: block; opacity: 1; }
                 
@@ -450,7 +452,7 @@
                 .xhs-panel-close { cursor: pointer; font-size: 20px; opacity: 0.8; }
                 .xhs-panel-close:hover { opacity: 1; }
                 
-                .xhs-panel-body { padding: 16px; overflow-y: auto; flex: 1 1 auto; }
+                .xhs-panel-body { padding: 16px; overflow-y: auto; flex: 1 1 auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
                 
                 .xhs-row {
                     display: flex;
@@ -463,6 +465,45 @@
                 }
                 .xhs-row > div:first-child { min-width: 0; }
                 .xhs-desc { font-size: 12px; color: #999; margin-top: 3px; line-height: 1.2; }
+                .xhs-section {
+                    background: rgba(255,255,255,0.92);
+                    border: 1px solid rgba(0,0,0,0.06);
+                    border-radius: 14px;
+                    padding: 12px;
+                    margin-bottom: 12px;
+                    box-shadow: inset 0 1px 0 rgba(255,255,255,0.65);
+                }
+                body.xhs-dark .xhs-section {
+                    background: rgba(0,0,0,0.18);
+                    border: 1px solid rgba(255,255,255,0.10);
+                    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+                }
+                .xhs-section-title {
+                    font-weight: 800;
+                    font-size: 12px;
+                    letter-spacing: 0.4px;
+                    color: rgba(0,0,0,0.55);
+                    text-transform: uppercase;
+                    margin-bottom: 10px;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                body.xhs-dark .xhs-section-title { color: rgba(255,255,255,0.72); }
+                .xhs-section-title::before {
+                    content: '';
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 999px;
+                    background: rgba(var(--xhs-rgb), 0.70);
+                    box-shadow: 0 0 0 4px rgba(var(--xhs-rgb), 0.15);
+                    flex: 0 0 auto;
+                }
+                .xhs-section .xhs-row { margin-bottom: 0; padding: 10px 0; }
+                .xhs-section .xhs-row + .xhs-row { border-top: 1px solid rgba(0,0,0,0.06); }
+                body.xhs-dark .xhs-section .xhs-row + .xhs-row { border-top: 1px solid rgba(255,255,255,0.08); }
+                .xhs-section .xhs-input, .xhs-section .xhs-btn { flex: 0 0 auto; }
+                .xhs-section-actions { display: flex; justify-content: center; padding-top: 6px; }
                 .xhs-btn {
                     padding: 6px 10px;
                     border-radius: 10px;
@@ -2504,6 +2545,60 @@
      * 5. 主程序
      * ============================================ */
     const App = {
+        _scrollLock: null,
+
+        _lockPageScroll() {
+            if (this._scrollLock) return;
+            try {
+                const root = document.documentElement;
+                const body = document.body;
+                const scrollbarW = Math.max(0, (window.innerWidth || 0) - (root?.clientWidth || 0));
+                this._scrollLock = {
+                    rootOverflow: root?.style?.overflow || '',
+                    bodyOverflow: body?.style?.overflow || '',
+                    bodyPaddingRight: body?.style?.paddingRight || '',
+                    scrollbarW
+                };
+                if (root) root.style.overflow = 'hidden';
+                if (body) {
+                    body.style.overflow = 'hidden';
+                    if (scrollbarW > 0) body.style.paddingRight = `${scrollbarW}px`;
+                }
+            } catch {}
+        },
+
+        _unlockPageScroll() {
+            const s = this._scrollLock;
+            if (!s) return;
+            this._scrollLock = null;
+            try {
+                const root = document.documentElement;
+                const body = document.body;
+                if (root) root.style.overflow = s.rootOverflow;
+                if (body) {
+                    body.style.overflow = s.bodyOverflow;
+                    body.style.paddingRight = s.bodyPaddingRight;
+                }
+            } catch {}
+        },
+
+        openSettingsPanel() {
+            const overlay = document.querySelector('.xhs-panel-overlay');
+            const panel = overlay?.querySelector?.('.xhs-panel');
+            if (!overlay || !panel) return;
+            this._lockPageScroll();
+            overlay.classList.add('show');
+            panel.classList.add('show');
+        },
+
+        closeSettingsPanel() {
+            const overlay = document.querySelector('.xhs-panel-overlay');
+            const panel = overlay?.querySelector?.('.xhs-panel');
+            overlay?.classList.remove('show');
+            panel?.classList.remove('show');
+            this._unlockPageScroll();
+        },
+
         init() {
             // 注入基础UI
             Styles.injectBase();
@@ -2798,10 +2893,7 @@
             };
             btn.onclick = (e) => {
                 e.preventDefault?.();
-                const overlay = document.querySelector('.xhs-panel-overlay');
-                const panel = overlay?.querySelector('.xhs-panel');
-                overlay?.classList.add('show');
-                panel?.classList.add('show');
+                App.openSettingsPanel();
             };
             document.body.appendChild(btn);
         },
@@ -2824,159 +2916,179 @@
                         <span class="xhs-panel-close">×</span>
                     </div>
                     <div class="xhs-panel-body">
-                        <div class="xhs-row">
-                            <div>
-                                <div>启用小L书模式</div>
-                                <div class="xhs-desc">开启瀑布流布局</div>
+                        <div class="xhs-section">
+                            <div class="xhs-section-title">布局</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>启用小L书模式</div>
+                                    <div class="xhs-desc">开启瀑布流布局</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.enabled?'on':''}" data-key="enabled"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.enabled?'on':''}" data-key="enabled"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>卡片错落布局</div>
-                                <div class="xhs-desc">根据内容高度自适应</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>卡片错落布局</div>
+                                    <div class="xhs-desc">根据内容高度自适应</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.cardStagger?'on':''}" data-key="cardStagger"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.cardStagger?'on':''}" data-key="cardStagger"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>列数</div>
-                                <div class="xhs-desc">桌面端基准列数（移动端会自动降到 2-3 列）</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>列数</div>
+                                    <div class="xhs-desc">桌面端基准列数（移动端会自动降到 2-3 列）</div>
+                                </div>
+                                <input class="xhs-input" type="number" min="2" max="8" step="1" value="${cfg.columnCount}" data-input="columnCount" />
                             </div>
-                            <input class="xhs-input" type="number" min="2" max="8" step="1" value="${cfg.columnCount}" data-input="columnCount" />
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>元信息布局</div>
-                                <div class="xhs-desc">紧凑：作者+统计同一行；宽松：作者+更新时间一行，统计另起一行</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>元信息布局</div>
+                                    <div class="xhs-desc">紧凑：作者+统计同一行；宽松：作者+更新时间一行，统计另起一行</div>
+                                </div>
+                                <select class="xhs-input" data-select="metaLayout">
+                                    <option value="compact" ${cfg.metaLayout === 'compact' ? 'selected' : ''}>紧凑型</option>
+                                    <option value="spacious" ${cfg.metaLayout === 'spacious' ? 'selected' : ''}>宽松型</option>
+                                </select>
                             </div>
-                            <select class="xhs-input" data-select="metaLayout">
-                                <option value="compact" ${cfg.metaLayout === 'compact' ? 'selected' : ''}>紧凑型</option>
-                                <option value="spacious" ${cfg.metaLayout === 'spacious' ? 'selected' : ''}>宽松型</option>
-                            </select>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>贴主展示</div>
-                                <div class="xhs-desc">头像/用户名显示方式</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>贴主展示</div>
+                                    <div class="xhs-desc">头像/用户名显示方式</div>
+                                </div>
+                                <select class="xhs-input" data-select="authorDisplay">
+                                    <option value="full" ${cfg.authorDisplay === 'full' ? 'selected' : ''}>完整展示</option>
+                                    <option value="avatar" ${cfg.authorDisplay === 'avatar' ? 'selected' : ''}>只展示头像</option>
+                                    <option value="name" ${cfg.authorDisplay === 'name' ? 'selected' : ''}>只展示用户名</option>
+                                </select>
                             </div>
-                            <select class="xhs-input" data-select="authorDisplay">
-                                <option value="full" ${cfg.authorDisplay === 'full' ? 'selected' : ''}>完整展示</option>
-                                <option value="avatar" ${cfg.authorDisplay === 'avatar' ? 'selected' : ''}>只展示头像</option>
-                                <option value="name" ${cfg.authorDisplay === 'name' ? 'selected' : ''}>只展示用户名</option>
-                            </select>
                         </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>显示统计数据</div>
-                                <div class="xhs-desc">总开关（更细粒度项在下面）</div>
+
+                        <div class="xhs-section">
+                            <div class="xhs-section-title">统计</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>显示统计数据</div>
+                                    <div class="xhs-desc">总开关（更细粒度项在下面）</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.showStats?'on':''}" data-key="showStats"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.showStats?'on':''}" data-key="showStats"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>统计：上次回复时间</div>
-                                <div class="xhs-desc">仅“宽松型”元信息布局会显示</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>上次回复时间</div>
+                                    <div class="xhs-desc">仅“宽松型”元信息布局会显示</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.showStatLastActivity?'on':''}" data-key="showStatLastActivity"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.showStatLastActivity?'on':''}" data-key="showStatLastActivity"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>统计：点赞数</div>
-                                <div class="xhs-desc">❤️</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>点赞数</div>
+                                    <div class="xhs-desc">❤️</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.showStatLikes?'on':''}" data-key="showStatLikes"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.showStatLikes?'on':''}" data-key="showStatLikes"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>统计：回复数</div>
-                                <div class="xhs-desc">💬</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>回复数</div>
+                                    <div class="xhs-desc">💬</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.showStatReplies?'on':''}" data-key="showStatReplies"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.showStatReplies?'on':''}" data-key="showStatReplies"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>统计：观看数</div>
-                                <div class="xhs-desc">👁️</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>观看数</div>
+                                    <div class="xhs-desc">👁️</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.showStatViews?'on':''}" data-key="showStatViews"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.showStatViews?'on':''}" data-key="showStatViews"></div>
                         </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>跨页面缓存</div>
-                                <div class="xhs-desc">缓存封面/点赞信息，减少重复请求</div>
+
+                        <div class="xhs-section">
+                            <div class="xhs-section-title">缓存</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>跨页面缓存</div>
+                                    <div class="xhs-desc">缓存封面/点赞信息，减少重复请求</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.cacheEnabled?'on':''}" data-key="cacheEnabled"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.cacheEnabled?'on':''}" data-key="cacheEnabled"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>缓存有效期（分钟）</div>
-                                <div class="xhs-desc">过期后会重新请求（默认 1440=24h）</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>缓存有效期（分钟）</div>
+                                    <div class="xhs-desc">过期后会重新请求（默认 1440=24h）</div>
+                                </div>
+                                <input class="xhs-input" type="number" min="1" max="1440" step="1" value="${cfg.cacheTtlMinutes}" data-input="cacheTtlMinutes" />
                             </div>
-                            <input class="xhs-input" type="number" min="1" max="1440" step="1" value="${cfg.cacheTtlMinutes}" data-input="cacheTtlMinutes" />
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>清理缓存</div>
-                                <div class="xhs-desc">清空封面/点赞跨页面缓存（用于修复封面不刷新）</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>缓存容量（条目）</div>
+                                    <div class="xhs-desc">超过后按最近使用自动淘汰</div>
+                                </div>
+                                <input class="xhs-input" type="number" min="50" max="5000" step="10" value="${cfg.cacheMaxEntries}" data-input="cacheMaxEntries" />
                             </div>
-                            <button class="xhs-btn danger" type="button" data-action="clearCache">清理</button>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>缓存容量（条目）</div>
-                                <div class="xhs-desc">超过后按最近使用自动淘汰</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>清理缓存</div>
+                                    <div class="xhs-desc">清空封面/点赞跨页面缓存（用于修复封面不刷新）</div>
+                                </div>
+                                <button class="xhs-btn danger" type="button" data-action="clearCache">清理</button>
                             </div>
-                            <input class="xhs-input" type="number" min="50" max="5000" step="10" value="${cfg.cacheMaxEntries}" data-input="cacheMaxEntries" />
                         </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>过加载模式</div>
-                                <div class="xhs-desc">扩大预取范围，让封面/点赞更早加载（可能增加请求）</div>
+
+                        <div class="xhs-section">
+                            <div class="xhs-section-title">图片</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>过加载模式</div>
+                                    <div class="xhs-desc">扩大预取范围，让封面/点赞更早加载（可能增加请求）</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.overfetchMode?'on':''}" data-key="overfetchMode"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.overfetchMode?'on':''}" data-key="overfetchMode"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>智能裁剪封面</div>
-                                <div class="xhs-desc">仅极端宽/长图会裁剪，减少卡片“超长图”影响</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>智能裁剪封面</div>
+                                    <div class="xhs-desc">仅极端宽/长图会裁剪，减少卡片“超长图”影响</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.imgCropEnabled?'on':''}" data-key="imgCropEnabled"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.imgCropEnabled?'on':''}" data-key="imgCropEnabled"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>裁剪基准比例</div>
-                                <div class="xhs-desc">宽/高（默认 1.33≈4/3，建议 1.0~1.78）</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>裁剪基准比例</div>
+                                    <div class="xhs-desc">宽/高（默认 1.33≈4/3）</div>
+                                </div>
+                                <input class="xhs-input" type="number" min="0.6" max="3.0" step="0.05" value="${cfg.imgCropBaseRatio}" data-input="imgCropBaseRatio" />
                             </div>
-                            <input class="xhs-input" type="number" min="0.6" max="3.0" step="0.05" value="${cfg.imgCropBaseRatio}" data-input="imgCropBaseRatio" />
                         </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>测试：增量渲染</div>
-                                <div class="xhs-desc">监听列表增量更新并按批次插入（可能更快，但稳定性待验证）</div>
+
+                        <div class="xhs-section">
+                            <div class="xhs-section-title">高级</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>测试：增量渲染</div>
+                                    <div class="xhs-desc">监听列表增量更新并按批次插入（可能更快，但稳定性待验证）</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.experimentalIncrementalRender?'on':''}" data-key="experimentalIncrementalRender"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.experimentalIncrementalRender?'on':''}" data-key="experimentalIncrementalRender"></div>
-                        </div>
-                        <div class="xhs-row">
-                            <div>
-                                <div>调试模式</div>
-                                <div class="xhs-desc">打开后会暴露 window.__xhsDebug（用于排查回退/缓存/渲染问题）</div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>调试模式</div>
+                                    <div class="xhs-desc">打开后会暴露 window.__xhsDebug（用于排查回退/缓存/渲染问题）</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.debugMode?'on':''}" data-key="debugMode"></div>
                             </div>
-                            <div class="xhs-switch ${cfg.debugMode?'on':''}" data-key="debugMode"></div>
                         </div>
-                        
-                        <div style="margin-top:20px; font-weight:600; margin-bottom:10px;">主题颜色</div>
-                        <div class="xhs-colors">
-                            ${Object.entries(Config.themes).map(([k,v]) => `
-                                <div class="xhs-color-item ${cfg.themeColor===v?'active':''}" 
-                                     style="background:${v}" 
-                                     title="${k}"
-                                     data-color="${v}"></div>
-                            `).join('')}
-                        </div>
-                        
-                        <div style="margin-top:20px; text-align:center; color:#999; font-size:12px;">
-                            <span class="xhs-reset" style="cursor:pointer;text-decoration:underline">重置设置</span>
+
+                        <div class="xhs-section">
+                            <div class="xhs-section-title">主题</div>
+                            <div class="xhs-colors">
+                                ${Object.entries(Config.themes).map(([k,v]) => `
+                                    <div class="xhs-color-item ${cfg.themeColor===v?'active':''}" 
+                                         style="background:${v}" 
+                                         title="${k}"
+                                         data-color="${v}"></div>
+                                `).join('')}
+                            </div>
+                            <div class="xhs-section-actions">
+                                <span class="xhs-reset" style="cursor:pointer;text-decoration:underline; color:#999; font-size:12px;">重置设置</span>
+                            </div>
                         </div>
                     </div>
                 `;
@@ -2988,8 +3100,7 @@
                 // 绑定关闭事件
                 panel.querySelector('.xhs-panel-close').onclick = (e) => {
                     e.preventDefault?.();
-                    overlay.classList.remove('show');
-                    panel.classList.remove('show');
+                    App.closeSettingsPanel();
                 };
 
                 // 绑定配置项点击（避免依赖 inline onclick，兼容更严格 CSP）
@@ -3050,10 +3161,26 @@
             
             overlay.onclick = (e) => {
                 if (e.target === overlay) {
-                    overlay.classList.remove('show');
-                    panel.classList.remove('show');
+                    App.closeSettingsPanel();
                 }
             };
+            // 防止“背景页面滚动”：在打开设置时锁定页面滚动，并在 overlay 上阻止滚动穿透
+            overlay.addEventListener('wheel', (e) => {
+                try {
+                    if (!overlay.classList.contains('show')) return;
+                    const body = panel.querySelector('.xhs-panel-body');
+                    if (body && body.contains(e.target)) return;
+                    e.preventDefault();
+                } catch {}
+            }, { passive: false });
+            overlay.addEventListener('touchmove', (e) => {
+                try {
+                    if (!overlay.classList.contains('show')) return;
+                    const body = panel.querySelector('.xhs-panel-body');
+                    if (body && body.contains(e.target)) return;
+                    e.preventDefault();
+                } catch {}
+            }, { passive: false });
         }
     };
 

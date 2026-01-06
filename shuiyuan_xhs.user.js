@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.1.1
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1';
+    const VERSION = '1.1.1';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -439,8 +439,9 @@
                     box-shadow: 0 10px 40px rgba(0,0,0,0.2);
                     transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
                     overflow: hidden;
-                    display: flex;
-                    flex-direction: column;
+                    /* Discourse 主题里可能已有同名 class，强制使用 flex 以保证 panel-body 可滚动 */
+                    display: flex !important;
+                    flex-direction: column !important;
                 }
                 .xhs-panel.show { opacity: 1; visibility: visible; transform: translate(-50%, -50%) scale(1); }
                 
@@ -452,7 +453,14 @@
                 .xhs-panel-close { cursor: pointer; font-size: 20px; opacity: 0.8; }
                 .xhs-panel-close:hover { opacity: 1; }
                 
-                .xhs-panel-body { padding: 16px; overflow-y: auto; flex: 1 1 auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+                .xhs-panel-body {
+                    padding: 16px;
+                    overflow-y: auto;
+                    flex: 1 1 auto;
+                    min-height: 0; /* 关键：允许 flex 子项收缩以触发内部滚动 */
+                    overscroll-behavior: contain;
+                    -webkit-overflow-scrolling: touch;
+                }
                 
                 .xhs-row {
                     display: flex;

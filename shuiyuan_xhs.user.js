@@ -106,13 +106,13 @@
             columnCount: 4, // 列数（桌面端基准）
             metaLayout: 'spacious', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
             authorDisplay: 'full', // 贴主展示：full/avatar/name
+            pillScale: 1.20, // 分类/标签 pill 的大小缩放（1.00=原始）
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 1440, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
             overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
             imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
             imgCropBaseRatio: 1.618, // 裁剪基准比例（宽/高）
-            experimentalIncrementalRender: false, // 测试功能：列表增量渲染（已停用）
             debugMode: true, // 调试模式（仅用于排查问题）
             panelCollapsed: { layout: false, stats: false, cache: false, images: false, advanced: true, theme: false } // 设置面板折叠状态
         },
@@ -131,6 +131,11 @@
                 cfg.columnCount = Math.min(8, Math.max(2, parseInt(cfg.columnCount, 10) || this.defaults.columnCount));
                 cfg.metaLayout = (cfg.metaLayout === 'spacious' || cfg.metaLayout === 'compact') ? cfg.metaLayout : this.defaults.metaLayout;
                 cfg.authorDisplay = (cfg.authorDisplay === 'full' || cfg.authorDisplay === 'avatar' || cfg.authorDisplay === 'name') ? cfg.authorDisplay : this.defaults.authorDisplay;
+                cfg.pillScale = (() => {
+                    const n = parseFloat(cfg.pillScale);
+                    if (!Number.isFinite(n)) return this.defaults.pillScale;
+                    return Math.min(1.8, Math.max(0.85, n));
+                })();
                 cfg.cacheTtlMinutes = Math.min(24 * 60, Math.max(1, parseInt(cfg.cacheTtlMinutes, 10) || this.defaults.cacheTtlMinutes));
                 cfg.cacheMaxEntries = Math.min(5000, Math.max(50, parseInt(cfg.cacheMaxEntries, 10) || this.defaults.cacheMaxEntries));
                 cfg.cacheEnabled = Boolean(cfg.cacheEnabled);
@@ -148,8 +153,6 @@
                     if (!Number.isFinite(n)) return this.defaults.imgCropBaseRatio;
                     return Math.min(3.0, Math.max(0.6, n));
                 })();
-                // v1.1.3：停用增量渲染（稳定性优先）
-                cfg.experimentalIncrementalRender = false;
                 cfg.debugMode = Boolean(cfg.debugMode);
                 // 设置面板折叠状态
                 try {
@@ -618,6 +621,7 @@
             const cols1400 = Math.min(colsDesktop, 4);
             const cols1100 = Math.min(colsDesktop, 3);
             const cols800 = Math.min(colsDesktop, 2);
+            const pillScale = Number(cfg.pillScale) || 1.20;
             
             document.body.classList.toggle('xhs-dark', isDark);
 
@@ -630,6 +634,7 @@
                     --xhs-text: ${isDark ? '#eee' : '#333'};
                     --xhs-text-sub: ${isDark ? '#aaa' : '#666'};
                     --xhs-cols: ${colsDesktop};
+                    --xhs-pill-scale: ${pillScale};
                 }
 
                 body.xhs-on { background: var(--xhs-bg) !important; }
@@ -1031,31 +1036,37 @@
                 }
                 .xhs-cat-pill {
                     pointer-events: auto;
-                    background: rgba(255,255,255,0.9);
+                    background: rgba(255,255,255,0.95);
                     backdrop-filter: blur(4px);
                     color: var(--xhs-c);
-                    font-size: 10px;
-                    padding: 2px 6px;
+                    font-size: calc(10px * var(--xhs-pill-scale, 1));
+                    padding: calc(3px * var(--xhs-pill-scale, 1)) calc(8px * var(--xhs-pill-scale, 1));
                     border-radius: 999px;
                     font-weight: 700;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.14);
                 }
                 .xhs-tag-pill {
                     pointer-events: auto;
-                    background: rgba(0,0,0,0.08);
-                    color: var(--xhs-text-sub);
-                    font-size: 10px;
-                    padding: 2px 6px;
+                    background: rgba(0,0,0,0.18);
+                    border: 1px solid rgba(0,0,0,0.10);
+                    -webkit-backdrop-filter: blur(4px);
+                    backdrop-filter: blur(4px);
+                    color: rgba(0,0,0,0.78);
+                    font-size: calc(10px * var(--xhs-pill-scale, 1));
+                    padding: calc(3px * var(--xhs-pill-scale, 1)) calc(8px * var(--xhs-pill-scale, 1));
                     border-radius: 999px;
                     cursor: pointer;
+                    font-weight: 650;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.10);
                 }
                 body.xhs-dark .xhs-cat-pill {
-                    background: rgba(0,0,0,0.55);
+                    background: rgba(0,0,0,0.65);
                     color: #fff;
                 }
                 body.xhs-dark .xhs-tag-pill {
-                    background: rgba(255,255,255,0.10);
-                    color: rgba(255,255,255,0.78);
+                    background: rgba(255,255,255,0.22);
+                    border: 1px solid rgba(255,255,255,0.16);
+                    color: rgba(255,255,255,0.86);
                 }
 
                 /* 外链标识（topic-featured-link） */
@@ -1756,20 +1767,6 @@
         },
 
         setupListUpdating() {
-            const cfg = Config.get();
-            const on = Boolean(cfg.experimentalIncrementalRender);
-
-            if (on) {
-                try { this.bodyObserver?.disconnect?.(); } catch {}
-                this.bodyObserver = null;
-                this.ensureListObserver();
-                return;
-            }
-
-            try { this.listObserver?.disconnect?.(); } catch {}
-            this.listObserver = null;
-            this.listObserverTarget = null;
-
             if (this.bodyObserver) return;
             // 兜底：监听 body 变化，自动处理新增帖子（较稳但可能更频繁）
             this.bodyObserver = new MutationObserver((mutations) => {
@@ -1785,152 +1782,6 @@
             try { this.bodyObserver.observe(document.body, { childList: true, subtree: true }); } catch {}
         },
 
-        ensureListObserver() {
-            try {
-                if (!Utils.isListLikePath()) return;
-                const cfg = Config.get();
-                if (!cfg.experimentalIncrementalRender) return;
-
-                const list = document.querySelector('.topic-list');
-                if (!list) return;
-                const tbody = document.querySelector('.topic-list tbody');
-                const target = tbody || list;
-                if (!target) return;
-                if (this.listObserverTarget === target && this.listObserver) return;
-
-                this.listObserver?.disconnect?.();
-                this.listObserverTarget = target;
-                this.listObserver = new MutationObserver((mutations) => {
-                    const addedRows = [];
-                    let needsFullRender = false;
-                    for (const m of mutations) {
-                        if (m.type === 'attributes' && m.target && m.attributeName === 'data-topic-id') {
-                            needsFullRender = true;
-                            break;
-                        }
-                        if (m.type === 'childList') {
-                            if (m.removedNodes?.length) needsFullRender = true;
-                            if (m.addedNodes?.length) {
-                                m.addedNodes.forEach((n) => {
-                                    if (n && n.nodeType === 1) {
-                                        const el = n;
-                                        if (el.matches?.('tr[data-topic-id], .topic-list-item[data-topic-id]')) addedRows.push(el);
-                                        else el.querySelectorAll?.('tr[data-topic-id], .topic-list-item[data-topic-id]')?.forEach((tr) => addedRows.push(tr));
-                                    }
-                                });
-                            }
-                        }
-                    }
-
-                    if (needsFullRender) {
-                        this.scheduleRender();
-                        return;
-                    }
-                    if (addedRows.length) {
-                        this.scheduleRenderNewRows(addedRows);
-                        return;
-                    }
-                });
-                this.listObserver.observe(target, {
-                    childList: true,
-                    subtree: true,
-                    attributes: true,
-                    attributeFilter: ['data-topic-id']
-                });
-            } catch {}
-        },
-
-        scheduleRenderNewRows(rows) {
-            try {
-                const cfg = Config.get();
-                if (!cfg.experimentalIncrementalRender) return;
-                if (!Array.isArray(rows) || !rows.length) return;
-                if (!this.pendingNewRowsByTid) this.pendingNewRowsByTid = new Map();
-                for (const row of rows) {
-                    const tid = row?.dataset?.topicId ? String(row.dataset.topicId) : '';
-                    if (!tid) continue;
-                    this.pendingNewRowsByTid.set(tid, row);
-                }
-            } catch {}
-            this.flushPendingNewRowsDebounced();
-        },
-
-        flushPendingNewRowsDebounced() {
-            clearTimeout(this.pendingNewRowsTimer);
-            this.pendingNewRowsTimer = setTimeout(() => {
-                try {
-                    const cfg = Config.get();
-                    if (!cfg.experimentalIncrementalRender) return;
-                    if (!Utils.isListPage()) return;
-                    const rows = this.pendingNewRowsByTid ? [...this.pendingNewRowsByTid.values()] : [];
-                    if (!rows.length) return;
-                    this.pendingNewRowsByTid.clear();
-
-                    // “锁定更新窗口”：等待 Discourse 把本批 DOM 更新做完，再一次性增量渲染
-                    const run = () => {
-                        try {
-                            if (!this.container) {
-                                this.render();
-                                return;
-                            }
-                            this.renderNewRows(rows);
-                        } catch {}
-                    };
-                    if (typeof window.requestIdleCallback === 'function') {
-                        window.requestIdleCallback(run, { timeout: 220 });
-                    } else {
-                        setTimeout(run, 0);
-                    }
-                } catch {}
-            }, 180);
-        },
-
-        renderNewRows(rows) {
-            const cfg = Config.get();
-            if (!cfg.experimentalIncrementalRender) return;
-            if (!Array.isArray(rows) || !rows.length) return;
-            this.ensureListMetaLoaded();
-            if (!this.observer) return;
-            if (!this.ensureContainer()) return;
-
-            if (!this.renderedTids) this.renderedTids = new Set();
-            try {
-                this.container.querySelectorAll('.xhs-card[data-tid]').forEach((c) => {
-                    const tid = c.getAttribute('data-tid');
-                    if (tid) this.renderedTids.add(String(tid));
-                });
-            } catch {}
-
-            rows.forEach((row) => {
-                const tidFromDataset = row?.dataset?.topicId ? String(row.dataset.topicId) : '';
-                const tid = tidFromDataset || (() => {
-                    try {
-                        const a = row?.querySelector?.('.main-link a.title, a.title');
-                        const href = a?.href || a?.getAttribute?.('href') || '';
-                        return Utils.extractTopicIdFromUrl(href);
-                    } catch { return ''; }
-                })();
-                if (!tid) return;
-                if (this.renderedTids.has(tid)) return;
-
-                const existing = this.container.querySelector(`.xhs-card[data-tid="${CSS.escape(String(tid))}"]`);
-                if (existing) {
-                    this.renderedTids.add(tid);
-                    return;
-                }
-
-                row.classList.add('xhs-processed');
-                row.dataset.xhsProcessedTid = tid;
-                const card = this.createCard(row);
-                this.renderedTids.add(tid);
-                this.appendCard(card);
-
-                const listMeta = this.listTopicMeta.get(tid);
-                if (listMeta) this.applyMetaToCard(card, listMeta, { fromList: true });
-                this.observer.observe(card);
-            });
-        },
-
         init() {
             this.loadPersistentCache();
             this.ensureListMetaLoaded();
@@ -1939,7 +1790,6 @@
                 try {
                     this.ensureListMetaLoaded();
                     this.setupListUpdating();
-                    this.ensureListObserver();
                 } catch {}
             }, 120));
             
@@ -2903,7 +2753,6 @@
                             overfetchMode: Boolean(Config.get().overfetchMode),
                             imgCropEnabled: Boolean(Config.get().imgCropEnabled),
                             imgCropBaseRatio: Number(Config.get().imgCropBaseRatio) || 0,
-                            experimentalIncrementalRender: Boolean(Config.get().experimentalIncrementalRender),
                             queue: Grid.queue?.length || 0,
                             cacheSize: Grid.cache?.size || 0,
                             persistentSize: Grid.persistentCache?.size || 0,
@@ -2969,7 +2818,7 @@
                             <div class="xhs-section-body">
                             <div class="xhs-row">
                                 <div>
-                                    <div>启用小L书模式</div>
+                                    <div>启用小水书模式</div>
                                     <div class="xhs-desc">开启瀑布流布局</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.enabled?'on':''}" data-key="enabled"></div>
@@ -3008,6 +2857,13 @@
                                     <option value="avatar" ${cfg.authorDisplay === 'avatar' ? 'selected' : ''}>只展示头像</option>
                                     <option value="name" ${cfg.authorDisplay === 'name' ? 'selected' : ''}>只展示用户名</option>
                                 </select>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>Pill 大小</div>
+                                    <div class="xhs-desc">分类/标签 pill 的缩放（1.00=原始）</div>
+                                </div>
+                                <input class="xhs-input" type="number" min="0.85" max="1.80" step="0.05" value="${cfg.pillScale}" data-input="pillScale" />
                             </div>
                             </div>
                         </div>
@@ -3116,13 +2972,6 @@
                             <div class="xhs-section-body">
                             <div class="xhs-row">
                                 <div>
-                                    <div>测试：增量渲染</div>
-                                    <div class="xhs-desc">v1.1.3 起已停用（稳定性优先）</div>
-                                </div>
-                                <div class="xhs-switch" style="opacity:0.35; pointer-events:none;" title="已停用"></div>
-                            </div>
-                            <div class="xhs-row">
-                                <div>
                                     <div>调试模式</div>
                                     <div class="xhs-desc">打开后会暴露 window.__xhsDebug（用于排查回退/缓存/渲染问题）</div>
                                 </div>
@@ -3184,7 +3033,7 @@
                     input.onchange = () => {
                         const k = input.getAttribute('data-input');
                         const raw = input.value;
-                        const v = (k === 'imgCropBaseRatio') ? parseFloat(raw) : parseInt(raw, 10);
+                        const v = (k === 'imgCropBaseRatio' || k === 'pillScale') ? parseFloat(raw) : parseInt(raw, 10);
                         Config.set(k, v);
                         render();
                         App.applyConfig();

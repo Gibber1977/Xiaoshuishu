@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      4.16
+// @version      4.17
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '4.16';
+    const VERSION = '4.17';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -100,6 +100,7 @@
             darkMode: 'auto', 
             cardStagger: true, // 错落布局
             columnCount: 5, // 列数（桌面端基准）
+            metaLayout: 'compact', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 1440, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
@@ -122,6 +123,7 @@
                 const cfg = { ...this.defaults, ...JSON.parse(GM_getValue(this.KEY, '{}')) };
                 // 基本校验/归一化（避免脏数据导致样式/逻辑异常）
                 cfg.columnCount = Math.min(8, Math.max(2, parseInt(cfg.columnCount, 10) || this.defaults.columnCount));
+                cfg.metaLayout = (cfg.metaLayout === 'spacious' || cfg.metaLayout === 'compact') ? cfg.metaLayout : this.defaults.metaLayout;
                 cfg.cacheTtlMinutes = Math.min(24 * 60, Math.max(1, parseInt(cfg.cacheTtlMinutes, 10) || this.defaults.cacheTtlMinutes));
                 cfg.cacheMaxEntries = Math.min(5000, Math.max(50, parseInt(cfg.cacheMaxEntries, 10) || this.defaults.cacheMaxEntries));
                 cfg.cacheEnabled = Boolean(cfg.cacheEnabled);
@@ -877,13 +879,19 @@
                 }
                 .xhs-title:hover { color: var(--xhs-c); }
                 
-                .xhs-meta { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--xhs-text-sub); }
-                .xhs-user { display: flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; }
+                .xhs-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--xhs-text-sub); min-width: 0; }
+                .xhs-user { display: flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; min-width: 0; flex: 1 1 auto; }
                 .xhs-user:hover { color: var(--xhs-c); }
                 .xhs-avatar { width: 20px; height: 20px; border-radius: 50%; background: #ddd; object-fit: cover;}
+                .xhs-user span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                .xhs-last-activity { display: none; margin-left: auto; white-space: nowrap; opacity: ${isDark ? '0.90' : '0.85'}; }
+                .xhs-last-activity:empty { display: none !important; }
                 
-                .xhs-stats { display: flex; gap: 8px; }
+                .xhs-stats { display: flex; gap: 8px; flex: 0 0 auto; white-space: nowrap; }
                 .xhs-stat-item { display: flex; align-items: center; gap: 2px; }
+                body[data-xhs-meta-layout=\"spacious\"] .xhs-meta { flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; row-gap: 6px; }
+                body[data-xhs-meta-layout=\"spacious\"] .xhs-last-activity { display: inline-flex; }
+                body[data-xhs-meta-layout=\"spacious\"] .xhs-stats { flex-basis: 100%; justify-content: flex-start; }
 
                 /* 标签与置顶 */
                 .xhs-tag {
@@ -979,6 +987,7 @@
 
                 /* 统计信息开关（避免重建 DOM） */
                 body[data-xhs-show-stats="0"] .xhs-replies { display: none !important; }
+                body[data-xhs-show-stats="0"] .xhs-views { display: none !important; }
                 
                 /* 暗色模式特定调整 */
                 ${isDark ? `
@@ -2163,6 +2172,13 @@
             const userHref = userCard ? `/u/${encodeURIComponent(userCard)}` : '';
             const views = row.querySelector('.views .number')?.textContent || '0';
             const replies = row.querySelector('.posts .number')?.textContent || '0';
+            const lastActivityEl =
+                row.querySelector('td.last-posted .relative-date, .last-posted .relative-date') ||
+                row.querySelector('td.activity .relative-date, .activity .relative-date') ||
+                row.querySelector('td.age .relative-date, .age .relative-date') ||
+                row.querySelector('.relative-date');
+            const lastActivity = lastActivityEl?.textContent?.trim?.() || '';
+            const lastActivityTitle = lastActivityEl?.getAttribute?.('title') || '';
             const excerpt = row.querySelector('.topic-excerpt')?.textContent?.trim() || title;
             const pinned = row.classList.contains('pinned');
             let featuredDomain = '';
@@ -2242,6 +2258,8 @@
             const safeUserCard = Utils.escapeHtml(userCard || '');
             const safeUserHref = Utils.escapeHtml(userHref || '');
             const safeAvatar = Utils.escapeHtml(avatar || '');
+            const safeLastActivity = Utils.escapeHtml(lastActivity || '');
+            const safeLastActivityTitle = Utils.escapeHtml(lastActivityTitle || '');
             const userBlockHtml = (userCard && userHref) ? `
                 <a class="xhs-user trigger-user-card" href="${safeUserHref}" data-user-card="${safeUserCard}" data-topic-id="${Utils.escapeHtml(tid)}" data-include-post-count-for="${Utils.escapeHtml(tid)}" aria-label="${safeUserCard}，访问个人资料">
                     <img class="xhs-avatar avatar" src="${safeAvatar}">
@@ -2261,9 +2279,11 @@
                     <a class="xhs-title" href="${href}">${safeTitle}</a>
                     <div class="xhs-meta">
                         ${userBlockHtml}
+                        <span class="xhs-last-activity" ${safeLastActivityTitle ? `title="${safeLastActivityTitle}"` : ''}>${safeLastActivity}</span>
                         <div class="xhs-stats">
                             <span class="xhs-stat-item">❤️ <span class="xhs-like-count">-</span></span>
                             <span class="xhs-replies">💬 ${replies}</span>
+                            <span class="xhs-views">👁️ ${views}</span>
                         </div>
                     </div>
                 </div>
@@ -2672,6 +2692,7 @@
             const cfg = Config.get();
             EarlyStyles.cacheEnabled(cfg.enabled);
             document.body.dataset.xhsShowStats = cfg.showStats ? '1' : '0';
+            document.body.dataset.xhsMetaLayout = cfg.metaLayout || 'compact';
             
             if (cfg.enabled) {
                 document.body.classList.remove('xhs-on');
@@ -2792,6 +2813,16 @@
                         </div>
                         <div class="xhs-row">
                             <div>
+                                <div>元信息布局</div>
+                                <div class="xhs-desc">紧凑：作者+统计同一行；宽松：作者+更新时间一行，统计另起一行</div>
+                            </div>
+                            <select class="xhs-input" data-select="metaLayout">
+                                <option value="compact" ${cfg.metaLayout === 'compact' ? 'selected' : ''}>紧凑型</option>
+                                <option value="spacious" ${cfg.metaLayout === 'spacious' ? 'selected' : ''}>宽松型</option>
+                            </select>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
                                 <div>显示统计数据</div>
                                 <div class="xhs-desc">回复数、点赞数</div>
                             </div>
@@ -2903,6 +2934,15 @@
                         render();
                         App.applyConfig();
                     }, 120);
+                });
+                panel.querySelectorAll('select.xhs-input[data-select]').forEach((sel) => {
+                    sel.onchange = () => {
+                        const k = sel.getAttribute('data-select');
+                        const v = sel.value;
+                        Config.set(k, v);
+                        render();
+                        App.applyConfig();
+                    };
                 });
                 panel.querySelectorAll('.xhs-color-item[data-color]').forEach((item) => {
                     item.onclick = () => {

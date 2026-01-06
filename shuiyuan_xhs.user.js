@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         水源社区小红书模式 Smart (智能配图+设置面板)
+// @name         小水书（瀑布流模式 + 智能封面 + 设置面板）
 // @namespace    http://tampermonkey.net/
-// @version      1.1.2
+// @version      1.1.3
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.2';
+    const VERSION = '1.1.3';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -103,17 +103,18 @@
             showStatViews: false,
             darkMode: 'auto', 
             cardStagger: true, // 错落布局
-            columnCount: 5, // 列数（桌面端基准）
-            metaLayout: 'compact', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
+            columnCount: 4, // 列数（桌面端基准）
+            metaLayout: 'spacious', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
             authorDisplay: 'full', // 贴主展示：full/avatar/name
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 1440, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
             overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
             imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
-            imgCropBaseRatio: 4/3, // 裁剪基准比例（宽/高）
-            experimentalIncrementalRender: false, // 测试功能：列表增量渲染（默认关闭）
-            debugMode: false // 调试模式（仅用于排查问题）
+            imgCropBaseRatio: 1.618, // 裁剪基准比例（宽/高）
+            experimentalIncrementalRender: false, // 测试功能：列表增量渲染（已停用）
+            debugMode: true, // 调试模式（仅用于排查问题）
+            panelCollapsed: { layout: false, stats: false, cache: false, images: false, advanced: true, theme: false } // 设置面板折叠状态
         },
         themes: {
             '交大红': '#C8102E',
@@ -147,14 +148,37 @@
                     if (!Number.isFinite(n)) return this.defaults.imgCropBaseRatio;
                     return Math.min(3.0, Math.max(0.6, n));
                 })();
-                cfg.experimentalIncrementalRender = Boolean(cfg.experimentalIncrementalRender);
+                // v1.1.3：停用增量渲染（稳定性优先）
+                cfg.experimentalIncrementalRender = false;
                 cfg.debugMode = Boolean(cfg.debugMode);
+                // 设置面板折叠状态
+                try {
+                    const pc = cfg.panelCollapsed;
+                    const def = this.defaults.panelCollapsed || {};
+                    cfg.panelCollapsed = {
+                        layout: typeof pc?.layout === 'boolean' ? pc.layout : Boolean(def.layout),
+                        stats: typeof pc?.stats === 'boolean' ? pc.stats : Boolean(def.stats),
+                        cache: typeof pc?.cache === 'boolean' ? pc.cache : Boolean(def.cache),
+                        images: typeof pc?.images === 'boolean' ? pc.images : Boolean(def.images),
+                        advanced: typeof pc?.advanced === 'boolean' ? pc.advanced : Boolean(def.advanced),
+                        theme: typeof pc?.theme === 'boolean' ? pc.theme : Boolean(def.theme),
+                    };
+                } catch { cfg.panelCollapsed = { ...this.defaults.panelCollapsed }; }
                 return cfg;
             } catch { return this.defaults; }
         },
         set(k, v) {
             const cfg = this.get();
             cfg[k] = v;
+            GM_setValue(this.KEY, JSON.stringify(cfg));
+        },
+        setCollapsedSection(sectionId, collapsed) {
+            const id = String(sectionId || '').trim();
+            if (!id) return;
+            const cfg = this.get();
+            const pc = cfg.panelCollapsed && typeof cfg.panelCollapsed === 'object' ? cfg.panelCollapsed : {};
+            pc[id] = Boolean(collapsed);
+            cfg.panelCollapsed = pc;
             GM_setValue(this.KEY, JSON.stringify(cfg));
         },
         reset() {
@@ -496,6 +520,8 @@
                     display: flex;
                     align-items: center;
                     gap: 8px;
+                    cursor: pointer;
+                    user-select: none;
                 }
                 body.xhs-dark .xhs-section-title { color: rgba(255,255,255,0.72); }
                 .xhs-section-title::before {
@@ -507,6 +533,15 @@
                     box-shadow: 0 0 0 4px rgba(var(--xhs-rgb), 0.15);
                     flex: 0 0 auto;
                 }
+                .xhs-section-title::after {
+                    content: '▾';
+                    margin-left: auto;
+                    opacity: 0.7;
+                    transform: translateY(-1px);
+                }
+                .xhs-section.xhs-collapsed .xhs-section-title::after { content: '▸'; }
+                .xhs-section-body { display: block; }
+                .xhs-section.xhs-collapsed .xhs-section-body { display: none; }
                 .xhs-section .xhs-row { margin-bottom: 0; padding: 10px 0; }
                 .xhs-section .xhs-row + .xhs-row { border-top: 1px solid rgba(0,0,0,0.06); }
                 body.xhs-dark .xhs-section .xhs-row + .xhs-row { border-top: 1px solid rgba(255,255,255,0.08); }
@@ -2891,7 +2926,7 @@
         createFloatBtn() {
             const btn = document.createElement('div');
             btn.className = 'xhs-float-btn';
-            btn.title = '小L书设置';
+            btn.title = '小水书设置';
             // 使用水源Logo
             const iconUrl = 'https://shuiyuan.sjtu.edu.cn/uploads/default/original/4X/3/6/7/367cb152ca2cc40f1cf3e7ede4ff8069727167cc_2_180x180.png';
             btn.innerHTML = `<img src="${iconUrl}" alt="设置" />`;
@@ -2925,12 +2960,13 @@
                 const cfg = Config.get();
                 panel.innerHTML = `
                     <div class="xhs-panel-header">
-                        <span>水源小L书 v${VERSION}</span>
+                        <span>小水书 v${VERSION}</span>
                         <span class="xhs-panel-close">×</span>
                     </div>
                     <div class="xhs-panel-body">
-                        <div class="xhs-section">
-                            <div class="xhs-section-title">布局</div>
+                        <div class="xhs-section ${cfg.panelCollapsed?.layout ? 'xhs-collapsed' : ''}" data-section="layout">
+                            <div class="xhs-section-title" data-section-title="layout">布局</div>
+                            <div class="xhs-section-body">
                             <div class="xhs-row">
                                 <div>
                                     <div>启用小L书模式</div>
@@ -2973,10 +3009,12 @@
                                     <option value="name" ${cfg.authorDisplay === 'name' ? 'selected' : ''}>只展示用户名</option>
                                 </select>
                             </div>
+                            </div>
                         </div>
 
-                        <div class="xhs-section">
-                            <div class="xhs-section-title">统计</div>
+                        <div class="xhs-section ${cfg.panelCollapsed?.stats ? 'xhs-collapsed' : ''}" data-section="stats">
+                            <div class="xhs-section-title" data-section-title="stats">统计</div>
+                            <div class="xhs-section-body">
                             <div class="xhs-row">
                                 <div>
                                     <div>显示统计数据</div>
@@ -2993,29 +3031,28 @@
                             </div>
                             <div class="xhs-row">
                                 <div>
-                                    <div>点赞数</div>
-                                    <div class="xhs-desc">❤️</div>
+                                    <div>❤️ 点赞数</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.showStatLikes?'on':''}" data-key="showStatLikes"></div>
                             </div>
                             <div class="xhs-row">
                                 <div>
-                                    <div>回复数</div>
-                                    <div class="xhs-desc">💬</div>
+                                    <div>💬 回复数</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.showStatReplies?'on':''}" data-key="showStatReplies"></div>
                             </div>
                             <div class="xhs-row">
                                 <div>
-                                    <div>观看数</div>
-                                    <div class="xhs-desc">👁️</div>
+                                    <div>👁️ 观看数</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.showStatViews?'on':''}" data-key="showStatViews"></div>
                             </div>
+                            </div>
                         </div>
 
-                        <div class="xhs-section">
-                            <div class="xhs-section-title">缓存</div>
+                        <div class="xhs-section ${cfg.panelCollapsed?.cache ? 'xhs-collapsed' : ''}" data-section="cache">
+                            <div class="xhs-section-title" data-section-title="cache">缓存</div>
+                            <div class="xhs-section-body">
                             <div class="xhs-row">
                                 <div>
                                     <div>跨页面缓存</div>
@@ -3044,10 +3081,12 @@
                                 </div>
                                 <button class="xhs-btn danger" type="button" data-action="clearCache">清理</button>
                             </div>
+                            </div>
                         </div>
 
-                        <div class="xhs-section">
-                            <div class="xhs-section-title">图片</div>
+                        <div class="xhs-section ${cfg.panelCollapsed?.images ? 'xhs-collapsed' : ''}" data-section="images">
+                            <div class="xhs-section-title" data-section-title="images">图片</div>
+                            <div class="xhs-section-body">
                             <div class="xhs-row">
                                 <div>
                                     <div>过加载模式</div>
@@ -3065,20 +3104,22 @@
                             <div class="xhs-row">
                                 <div>
                                     <div>裁剪基准比例</div>
-                                    <div class="xhs-desc">宽/高（默认 1.33≈4/3）</div>
+                                    <div class="xhs-desc">宽/高。图片过宽或过长时会裁到边界比例（默认 1.618）</div>
                                 </div>
                                 <input class="xhs-input" type="number" min="0.6" max="3.0" step="0.05" value="${cfg.imgCropBaseRatio}" data-input="imgCropBaseRatio" />
                             </div>
+                            </div>
                         </div>
 
-                        <div class="xhs-section">
-                            <div class="xhs-section-title">高级</div>
+                        <div class="xhs-section ${cfg.panelCollapsed?.advanced ? 'xhs-collapsed' : ''}" data-section="advanced">
+                            <div class="xhs-section-title" data-section-title="advanced">高级</div>
+                            <div class="xhs-section-body">
                             <div class="xhs-row">
                                 <div>
                                     <div>测试：增量渲染</div>
-                                    <div class="xhs-desc">监听列表增量更新并按批次插入（可能更快，但稳定性待验证）</div>
+                                    <div class="xhs-desc">v1.1.3 起已停用（稳定性优先）</div>
                                 </div>
-                                <div class="xhs-switch ${cfg.experimentalIncrementalRender?'on':''}" data-key="experimentalIncrementalRender"></div>
+                                <div class="xhs-switch" style="opacity:0.35; pointer-events:none;" title="已停用"></div>
                             </div>
                             <div class="xhs-row">
                                 <div>
@@ -3087,10 +3128,12 @@
                                 </div>
                                 <div class="xhs-switch ${cfg.debugMode?'on':''}" data-key="debugMode"></div>
                             </div>
+                            </div>
                         </div>
 
-                        <div class="xhs-section">
-                            <div class="xhs-section-title">主题</div>
+                        <div class="xhs-section ${cfg.panelCollapsed?.theme ? 'xhs-collapsed' : ''}" data-section="theme">
+                            <div class="xhs-section-title" data-section-title="theme">主题</div>
+                            <div class="xhs-section-body">
                             <div class="xhs-colors">
                                 ${Object.entries(Config.themes).map(([k,v]) => `
                                     <div class="xhs-color-item ${cfg.themeColor===v?'active':''}" 
@@ -3101,6 +3144,7 @@
                             </div>
                             <div class="xhs-section-actions">
                                 <span class="xhs-reset" style="cursor:pointer;text-decoration:underline; color:#999; font-size:12px;">重置设置</span>
+                            </div>
                             </div>
                         </div>
                     </div>
@@ -3123,6 +3167,16 @@
                     render();
                     App.applyConfig();
                 };
+                panel.querySelectorAll('.xhs-section-title[data-section-title]').forEach((title) => {
+                    title.addEventListener('click', () => {
+                        const id = title.getAttribute('data-section-title');
+                        if (!id) return;
+                        const cfg2 = Config.get();
+                        const cur = Boolean(cfg2.panelCollapsed?.[id]);
+                        Config.setCollapsedSection(id, !cur);
+                        render();
+                    });
+                });
                 panel.querySelectorAll('.xhs-switch[data-key]').forEach((sw) => {
                     sw.onclick = () => toggleKey(sw.getAttribute('data-key'));
                 });

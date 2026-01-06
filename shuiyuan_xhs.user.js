@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      4.13
+// @version      4.14
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '4.13';
+    const VERSION = '4.14';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -103,7 +103,10 @@
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 60, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
-            overfetchMode: false, // 过加载模式：扩大预取范围（可能增加请求）
+            overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
+            imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
+            imgCropBaseRatio: 4/3, // 裁剪基准比例（宽/高）
+            experimentalIncrementalRender: false, // 测试功能：列表增量渲染（默认关闭）
             debugMode: false // 调试模式（仅用于排查问题）
         },
         themes: {
@@ -126,6 +129,13 @@
                 cfg.enabled = Boolean(cfg.enabled);
                 cfg.cardStagger = Boolean(cfg.cardStagger);
                 cfg.overfetchMode = Boolean(cfg.overfetchMode);
+                cfg.imgCropEnabled = Boolean(cfg.imgCropEnabled);
+                cfg.imgCropBaseRatio = (() => {
+                    const n = parseFloat(cfg.imgCropBaseRatio);
+                    if (!Number.isFinite(n)) return this.defaults.imgCropBaseRatio;
+                    return Math.min(3.0, Math.max(0.6, n));
+                })();
+                cfg.experimentalIncrementalRender = Boolean(cfg.experimentalIncrementalRender);
                 cfg.debugMode = Boolean(cfg.debugMode);
                 return cfg;
             } catch { return this.defaults; }
@@ -571,6 +581,23 @@
                     opacity: 0; transition: opacity 0.3s;
                 }
                 .xhs-real-img.loaded { opacity: 1; }
+
+                /* 智能裁剪：仅极端宽/长图时启用（裁到“边界比例”） */
+                .xhs-cover.xhs-img-crop {
+                    aspect-ratio: var(--xhs-crop-ar, 4 / 3);
+                    overflow: hidden;
+                }
+                @supports not (aspect-ratio: 1 / 1) {
+                    .xhs-cover.xhs-img-crop { height: 210px; }
+                }
+                .xhs-cover.xhs-img-crop .xhs-real-img {
+                    width: 100%;
+                    height: 100%;
+                    object-fit: cover;
+                    object-position: var(--xhs-img-pos, 50% 50%);
+                }
+                .xhs-cover.xhs-img-crop.xhs-img-tall { --xhs-img-pos: 50% 0%; }
+                .xhs-cover.xhs-img-crop.xhs-img-wide { --xhs-img-pos: 50% 50%; }
                 
                 /* 文字封面样式（更丰富，参考 littleLBook 的配色/装饰思路） */
                 .xhs-text-cover {
@@ -969,6 +996,12 @@
         cache: new Map(),
         processing: false,
         renderScheduleTimer: null,
+        listObserver: null,
+        listObserverTarget: null,
+        pendingNewRowsByTid: null,
+        pendingNewRowsTimer: null,
+        bodyObserver: null,
+        renderedTids: null,
         
         // 速率限制配置
         rateLimit: {
@@ -1018,6 +1051,41 @@
                     const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
                     if (!res.ok) return;
                     const json = await res.json();
+                    // users[] -> id -> { username, avatarTemplate }
+                    const userById = new Map();
+                    try {
+                        const users = Array.isArray(json?.users) ? json.users : [];
+                        for (const u of users) {
+                            const id = typeof u?.id === 'number' ? u.id : null;
+                            const username = u?.username ? String(u.username) : '';
+                            const avatarTemplate = (u?.avatar_template || u?.avatarTemplate) ? String(u.avatar_template || u.avatarTemplate) : '';
+                            if (!id || !username) continue;
+                            userById.set(id, { username, avatarTemplate });
+                        }
+                    } catch {}
+
+                    const avatarFromTemplate = (tpl, size) => {
+                        const t = tpl ? String(tpl) : '';
+                        if (!t) return '';
+                        let url = t.replace(/\{size\}/gu, String(size || 96));
+                        if (url.startsWith('/')) url = `${window.location.origin}${url}`;
+                        return url;
+                    };
+                    const pickAuthor = (topic) => {
+                        const posters = Array.isArray(topic?.posters) ? topic.posters : [];
+                        if (!posters.length) return null;
+                        const prefer =
+                            posters.find((p) => /original poster|发起者|楼主|原作者/iu.test(String(p?.description || ''))) ||
+                            posters[0];
+                        const uid = typeof prefer?.user_id === 'number' ? prefer.user_id : null;
+                        if (!uid) return null;
+                        const u = userById.get(uid);
+                        const username = u?.username ? String(u.username) : '';
+                        if (!username) return null;
+                        const avatar = avatarFromTemplate(u?.avatarTemplate, 96);
+                        return { username, avatar };
+                    };
+
                     const topics = json?.topic_list?.topics;
                     if (!Array.isArray(topics)) return;
                     for (const t of topics) {
@@ -1028,7 +1096,8 @@
                         const likes = typeof t.like_count === 'number' ? t.like_count : 0;
                         const tags = Array.isArray(t.tags) ? t.tags : [];
                         const featuredLink = t.featured_link || '';
-                        this.listTopicMeta.set(tid, { img, likes, tags, featuredLink });
+                        const author = pickAuthor(t);
+                        this.listTopicMeta.set(tid, { img, likes, tags, featuredLink, author });
                     }
 
                     // 列表元信息加载完成后，尽可能填充现有卡片（减少 per-topic 请求）。
@@ -1042,6 +1111,99 @@
                     }
                 } catch {}
             })();
+        },
+
+        applyAuthorMetaToCard(el, author) {
+            const username = author?.username ? String(author.username) : '';
+            if (!username) return;
+            const avatarUrl = author?.avatar ? String(author.avatar) : '';
+            const tid = String(el.dataset.tid || el.getAttribute('data-tid') || '');
+            const meta = el.querySelector('.xhs-meta');
+            if (!meta) return;
+            const block = meta.querySelector('.xhs-user');
+            if (!block) return;
+
+            const nameSpan = block.querySelector('span');
+            if (nameSpan) {
+                const cur = (nameSpan.textContent || '').trim();
+                if (!cur || cur === 'SJTUer') nameSpan.textContent = username;
+            }
+            const img = block.querySelector('img.xhs-avatar');
+            if (img && avatarUrl) {
+                const curSrc = img.getAttribute('src') || '';
+                if (!curSrc || curSrc === 'about:blank') img.setAttribute('src', avatarUrl);
+            }
+
+            // 若当前不是可触发 user-card 的链接，则升级为 trigger-user-card（对移动端列表缺头像/用户名尤为重要）
+            if (block.tagName === 'DIV') {
+                const a = document.createElement('a');
+                a.className = 'xhs-user trigger-user-card';
+                a.href = `/u/${encodeURIComponent(username)}`;
+                a.setAttribute('data-user-card', username);
+                if (tid) {
+                    a.setAttribute('data-topic-id', tid);
+                    a.setAttribute('data-include-post-count-for', tid);
+                }
+                a.setAttribute('aria-label', `${username}，访问个人资料`);
+                while (block.firstChild) a.appendChild(block.firstChild);
+                block.replaceWith(a);
+                el.dataset.userName = username;
+                el.dataset.userHref = a.getAttribute('href') || '';
+                return;
+            }
+            if (block.tagName === 'A') {
+                if (!block.getAttribute('data-user-card')) block.setAttribute('data-user-card', username);
+                if (!block.getAttribute('href')) block.setAttribute('href', `/u/${encodeURIComponent(username)}`);
+                if (tid && !block.getAttribute('data-include-post-count-for')) block.setAttribute('data-include-post-count-for', tid);
+                if (tid && !block.getAttribute('data-topic-id')) block.setAttribute('data-topic-id', tid);
+                if (!block.getAttribute('aria-label')) block.setAttribute('aria-label', `${username}，访问个人资料`);
+                el.dataset.userName = username;
+                el.dataset.userHref = block.getAttribute('href') || '';
+            }
+        },
+
+        applyImageCropForCover(cover, img) {
+            const cfg = Config.get();
+            if (!cfg.imgCropEnabled) return;
+            if (!cover || !img) return;
+            const w = img.naturalWidth || 0;
+            const h = img.naturalHeight || 0;
+            if (!w || !h) return;
+
+            cover.classList.remove('xhs-img-crop', 'xhs-img-tall', 'xhs-img-wide');
+            cover.style.removeProperty('--xhs-img-pos');
+            cover.style.removeProperty('--xhs-crop-ar');
+            cover.style.removeProperty('height');
+
+            const base = Number(cfg.imgCropBaseRatio) || (4 / 3); // width / height
+            const minAR = base / 2;
+            const maxAR = base * 2;
+            const wh = w / h;
+
+            const applyFallbackHeight = (ratio) => {
+                try {
+                    if (window.CSS?.supports && window.CSS.supports('aspect-ratio: 1 / 1')) return;
+                } catch {}
+                try {
+                    const cw = cover.clientWidth || 320;
+                    const ch = Math.round(cw / (ratio || (4 / 3)));
+                    const bounded = Math.min(520, Math.max(140, ch));
+                    cover.style.height = `${bounded}px`;
+                } catch {}
+            };
+
+            if (wh > maxAR) {
+                cover.classList.add('xhs-img-crop', 'xhs-img-wide');
+                cover.style.setProperty('--xhs-crop-ar', String(maxAR));
+                applyFallbackHeight(maxAR);
+                return;
+            }
+            if (wh < minAR) {
+                cover.classList.add('xhs-img-crop', 'xhs-img-tall');
+                cover.style.setProperty('--xhs-crop-ar', String(minAR));
+                applyFallbackHeight(minAR);
+                return;
+            }
         },
 
         scheduleRender() {
@@ -1253,13 +1415,21 @@
             const likeEl = el.querySelector('.xhs-like-count');
             if (likeEl) likeEl.textContent = String(merged.likes ?? 0);
 
+            // 作者信息（移动端列表常见：DOM 里拿不到头像/用户名，这里用 list.json 补齐）
+            try {
+                if (meta.author) this.applyAuthorMetaToCard(el, meta.author);
+            } catch {}
+
             if (merged.img) {
                 const cover = el.querySelector('.xhs-cover');
                 if (cover && !cover.querySelector('img.xhs-real-img')) {
                     const img = document.createElement('img');
                     img.src = merged.img;
                     img.className = 'xhs-real-img';
-                    img.onload = () => img.classList.add('loaded');
+                    img.onload = () => {
+                        img.classList.add('loaded');
+                        try { this.applyImageCropForCover(cover, img); } catch {}
+                    };
                     cover.querySelector('.xhs-text-cover')?.remove();
                     cover.prepend(img);
                     cover.classList.add('has-img');
@@ -1421,11 +1591,42 @@
             } catch {}
         },
 
-        init() {
-            this.loadPersistentCache();
-            this.ensureListMetaLoaded();
-            // 监听页面变化，自动处理新增帖子
-            const mo = new MutationObserver((mutations) => {
+        ensureContainer() {
+            const list = document.querySelector('.topic-list');
+            if (!list) return false;
+            try {
+                if (!this.container) {
+                    this.container = document.createElement('div');
+                    this.container.className = `xhs-grid ${Config.get().cardStagger ? '' : 'grid-mode'}`;
+                    list.parentNode.insertBefore(this.container, list);
+                    this.renderedTids = new Set();
+                    this.ensureColumns(false);
+                } else if (this.container.parentNode !== list.parentNode || this.container.nextSibling !== list) {
+                    // Discourse SPA 下 DOM 可能被重建：确保容器仍在 topic-list 之前
+                    list.parentNode.insertBefore(this.container, list);
+                }
+            } catch {}
+            return Boolean(this.container);
+        },
+
+        setupListUpdating() {
+            const cfg = Config.get();
+            const on = Boolean(cfg.experimentalIncrementalRender);
+
+            if (on) {
+                try { this.bodyObserver?.disconnect?.(); } catch {}
+                this.bodyObserver = null;
+                this.ensureListObserver();
+                return;
+            }
+
+            try { this.listObserver?.disconnect?.(); } catch {}
+            this.listObserver = null;
+            this.listObserverTarget = null;
+
+            if (this.bodyObserver) return;
+            // 兜底：监听 body 变化，自动处理新增帖子（较稳但可能更频繁）
+            this.bodyObserver = new MutationObserver((mutations) => {
                 let shouldUpdate = false;
                 for (let m of mutations) {
                     if (m.addedNodes.length && m.target.classList && !m.target.classList.contains('xhs-grid')) {
@@ -1435,7 +1636,166 @@
                 }
                 if (shouldUpdate && Utils.isListPage()) this.scheduleRender();
             });
-            mo.observe(document.body, { childList: true, subtree: true });
+            try { this.bodyObserver.observe(document.body, { childList: true, subtree: true }); } catch {}
+        },
+
+        ensureListObserver() {
+            try {
+                if (!Utils.isListLikePath()) return;
+                const cfg = Config.get();
+                if (!cfg.experimentalIncrementalRender) return;
+
+                const list = document.querySelector('.topic-list');
+                if (!list) return;
+                const tbody = document.querySelector('.topic-list tbody');
+                const target = tbody || list;
+                if (!target) return;
+                if (this.listObserverTarget === target && this.listObserver) return;
+
+                this.listObserver?.disconnect?.();
+                this.listObserverTarget = target;
+                this.listObserver = new MutationObserver((mutations) => {
+                    const addedRows = [];
+                    let needsFullRender = false;
+                    for (const m of mutations) {
+                        if (m.type === 'attributes' && m.target && m.attributeName === 'data-topic-id') {
+                            needsFullRender = true;
+                            break;
+                        }
+                        if (m.type === 'childList') {
+                            if (m.removedNodes?.length) needsFullRender = true;
+                            if (m.addedNodes?.length) {
+                                m.addedNodes.forEach((n) => {
+                                    if (n && n.nodeType === 1) {
+                                        const el = n;
+                                        if (el.matches?.('tr[data-topic-id], .topic-list-item[data-topic-id]')) addedRows.push(el);
+                                        else el.querySelectorAll?.('tr[data-topic-id], .topic-list-item[data-topic-id]')?.forEach((tr) => addedRows.push(tr));
+                                    }
+                                });
+                            }
+                        }
+                    }
+
+                    if (needsFullRender) {
+                        this.scheduleRender();
+                        return;
+                    }
+                    if (addedRows.length) {
+                        this.scheduleRenderNewRows(addedRows);
+                        return;
+                    }
+                });
+                this.listObserver.observe(target, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['data-topic-id']
+                });
+            } catch {}
+        },
+
+        scheduleRenderNewRows(rows) {
+            try {
+                const cfg = Config.get();
+                if (!cfg.experimentalIncrementalRender) return;
+                if (!Array.isArray(rows) || !rows.length) return;
+                if (!this.pendingNewRowsByTid) this.pendingNewRowsByTid = new Map();
+                for (const row of rows) {
+                    const tid = row?.dataset?.topicId ? String(row.dataset.topicId) : '';
+                    if (!tid) continue;
+                    this.pendingNewRowsByTid.set(tid, row);
+                }
+            } catch {}
+            this.flushPendingNewRowsDebounced();
+        },
+
+        flushPendingNewRowsDebounced() {
+            clearTimeout(this.pendingNewRowsTimer);
+            this.pendingNewRowsTimer = setTimeout(() => {
+                try {
+                    const cfg = Config.get();
+                    if (!cfg.experimentalIncrementalRender) return;
+                    if (!Utils.isListPage()) return;
+                    const rows = this.pendingNewRowsByTid ? [...this.pendingNewRowsByTid.values()] : [];
+                    if (!rows.length) return;
+                    this.pendingNewRowsByTid.clear();
+
+                    // “锁定更新窗口”：等待 Discourse 把本批 DOM 更新做完，再一次性增量渲染
+                    const run = () => {
+                        try {
+                            if (!this.container) {
+                                this.render();
+                                return;
+                            }
+                            this.renderNewRows(rows);
+                        } catch {}
+                    };
+                    if (typeof window.requestIdleCallback === 'function') {
+                        window.requestIdleCallback(run, { timeout: 220 });
+                    } else {
+                        setTimeout(run, 0);
+                    }
+                } catch {}
+            }, 180);
+        },
+
+        renderNewRows(rows) {
+            const cfg = Config.get();
+            if (!cfg.experimentalIncrementalRender) return;
+            if (!Array.isArray(rows) || !rows.length) return;
+            this.ensureListMetaLoaded();
+            if (!this.observer) return;
+            if (!this.ensureContainer()) return;
+
+            if (!this.renderedTids) this.renderedTids = new Set();
+            try {
+                this.container.querySelectorAll('.xhs-card[data-tid]').forEach((c) => {
+                    const tid = c.getAttribute('data-tid');
+                    if (tid) this.renderedTids.add(String(tid));
+                });
+            } catch {}
+
+            rows.forEach((row) => {
+                const tidFromDataset = row?.dataset?.topicId ? String(row.dataset.topicId) : '';
+                const tid = tidFromDataset || (() => {
+                    try {
+                        const a = row?.querySelector?.('.main-link a.title, a.title');
+                        const href = a?.href || a?.getAttribute?.('href') || '';
+                        return Utils.extractTopicIdFromUrl(href);
+                    } catch { return ''; }
+                })();
+                if (!tid) return;
+                if (this.renderedTids.has(tid)) return;
+
+                const existing = this.container.querySelector(`.xhs-card[data-tid="${CSS.escape(String(tid))}"]`);
+                if (existing) {
+                    this.renderedTids.add(tid);
+                    return;
+                }
+
+                row.classList.add('xhs-processed');
+                row.dataset.xhsProcessedTid = tid;
+                const card = this.createCard(row);
+                this.renderedTids.add(tid);
+                this.appendCard(card);
+
+                const listMeta = this.listTopicMeta.get(tid);
+                if (listMeta) this.applyMetaToCard(card, listMeta, { fromList: true });
+                this.observer.observe(card);
+            });
+        },
+
+        init() {
+            this.loadPersistentCache();
+            this.ensureListMetaLoaded();
+            this.setupListUpdating();
+            window.addEventListener('xhs-route-change', Utils.debounce(() => {
+                try {
+                    this.ensureListMetaLoaded();
+                    this.setupListUpdating();
+                    this.ensureListObserver();
+                } catch {}
+            }, 120));
             
             // 可见性观察器：用于懒加载详情（支持“过加载模式”扩大预取范围）
             this.resetObserver();
@@ -1587,7 +1947,10 @@
                 const img = document.createElement('img');
                 img.src = merged.img;
                 img.className = 'xhs-real-img';
-                img.onload = () => img.classList.add('loaded');
+                img.onload = () => {
+                    img.classList.add('loaded');
+                    try { this.applyImageCropForCover(cover, img); } catch {}
+                };
                 
                 // 仅替换文字封面，保留标签/置顶/外链标识等元素
                 cover.querySelector('.xhs-text-cover')?.remove();
@@ -2276,6 +2639,10 @@
                             cards: document.querySelectorAll('.xhs-card').length,
                             cols: (Grid._getDirectColumns?.() || []).length,
                             gridMode: Boolean(Grid.container?.classList?.contains?.('grid-mode')),
+                            overfetchMode: Boolean(Config.get().overfetchMode),
+                            imgCropEnabled: Boolean(Config.get().imgCropEnabled),
+                            imgCropBaseRatio: Number(Config.get().imgCropBaseRatio) || 0,
+                            experimentalIncrementalRender: Boolean(Config.get().experimentalIncrementalRender),
                             queue: Grid.queue?.length || 0,
                             cacheSize: Grid.cache?.size || 0,
                             persistentSize: Grid.persistentCache?.size || 0,
@@ -2389,6 +2756,27 @@
                         </div>
                         <div class="xhs-row">
                             <div>
+                                <div>智能裁剪封面</div>
+                                <div class="xhs-desc">仅极端宽/长图会裁剪，减少卡片“超长图”影响</div>
+                            </div>
+                            <div class="xhs-switch ${cfg.imgCropEnabled?'on':''}" data-key="imgCropEnabled"></div>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>裁剪基准比例</div>
+                                <div class="xhs-desc">宽/高（默认 1.33≈4/3，建议 1.0~1.78）</div>
+                            </div>
+                            <input class="xhs-input" type="number" min="0.6" max="3.0" step="0.05" value="${cfg.imgCropBaseRatio}" data-input="imgCropBaseRatio" />
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>测试：增量渲染</div>
+                                <div class="xhs-desc">监听列表增量更新并按批次插入（可能更快，但稳定性待验证）</div>
+                            </div>
+                            <div class="xhs-switch ${cfg.experimentalIncrementalRender?'on':''}" data-key="experimentalIncrementalRender"></div>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
                                 <div>调试模式</div>
                                 <div class="xhs-desc">打开后会暴露 window.__xhsDebug（用于排查回退/缓存/渲染问题）</div>
                             </div>
@@ -2431,7 +2819,8 @@
                 panel.querySelectorAll('input.xhs-input[data-input]').forEach((input) => {
                     input.oninput = Utils.debounce(() => {
                         const k = input.getAttribute('data-input');
-                        const v = parseInt(input.value, 10);
+                        const raw = input.value;
+                        const v = (k === 'imgCropBaseRatio') ? parseFloat(raw) : parseInt(raw, 10);
                         Config.set(k, v);
                         render();
                         App.applyConfig();

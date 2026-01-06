@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      4.14
+// @version      4.15
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '4.14';
+    const VERSION = '4.15';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -1097,7 +1097,7 @@
                         const tags = Array.isArray(t.tags) ? t.tags : [];
                         const featuredLink = t.featured_link || '';
                         const author = pickAuthor(t);
-                        this.listTopicMeta.set(tid, { img, likes, tags, featuredLink, author });
+                        this.listTopicMeta.set(tid, { img, likes, tags, featuredLink, author, origin: 'list' });
                     }
 
                     // 列表元信息加载完成后，尽可能填充现有卡片（减少 per-topic 请求）。
@@ -1363,10 +1363,12 @@
             // 仅在内存里 touch lastAccess（减少 GM_setValue 写入频率）
             cached.lastAccess = now;
             const data = cached.data || {};
+            const origin = (data.origin === 'topic' || data.origin === 'list') ? data.origin : '';
             return {
                 img: data.img ?? null,
                 likes: typeof data.likes === 'number' ? data.likes : (parseInt(data.likes, 10) || 0),
-                noImg: Boolean(data.noImg)
+                noImg: Boolean(data.noImg),
+                origin
             };
         },
 
@@ -1377,10 +1379,12 @@
             const now = Date.now();
             const key = String(tid || '');
             if (!key) return;
+            const origin = (data?.origin === 'topic' || data?.origin === 'list') ? data.origin : '';
             const next = {
                 img: data?.img || null,
                 likes: typeof data?.likes === 'number' ? data.likes : (parseInt(data?.likes, 10) || 0),
-                noImg: Boolean(data?.noImg)
+                noImg: Boolean(data?.noImg),
+                origin
             };
 
             const prev = this.persistentCache.get(key);
@@ -1389,7 +1393,8 @@
                 prevData &&
                 prevData.img === next.img &&
                 (prevData.likes || 0) === (next.likes || 0) &&
-                Boolean(prevData.noImg) === Boolean(next.noImg);
+                Boolean(prevData.noImg) === Boolean(next.noImg) &&
+                String(prevData.origin || '') === String(next.origin || '');
             // 不同才更新时间戳；相同仅 touch lastAccess，减少写入
             const ts = same && typeof prev?.ts === 'number' ? prev.ts : now;
             this.persistentCache.set(key, { ts, lastAccess: now, data: next });
@@ -1403,11 +1408,14 @@
             if (!tid) return;
             const existing = this.cache.get(tid) || { img: null, likes: 0, needsImage: true };
             const noImg = Boolean(meta?.noImg);
+            const origin = (meta?.origin === 'topic' || meta?.origin === 'list') ? meta.origin : '';
             const merged = {
                 img: meta.img ?? existing.img ?? null,
                 likes: (typeof meta.likes === 'number' ? meta.likes : existing.likes) || 0,
-                needsImage: noImg ? false : Boolean(existing.needsImage),
-                noImg
+                // noImg 只有在“已被 topic.json 验证”时才强制阻止后续请求；否则允许再验证一次，避免老缓存误判
+                needsImage: (noImg && origin === 'topic') ? false : Boolean(existing.needsImage),
+                noImg,
+                origin
             };
             if (merged.img) merged.needsImage = false;
             this.cache.set(tid, merged);
@@ -1436,12 +1444,13 @@
                 }
             } else if (opts?.fromList) {
                 // 列表未提供 image_url，保持需要进一步按需抓取 cooked 的状态
-                if (!noImg) this.cache.set(tid, { ...merged, needsImage: true });
+                // 如果 noImg 未验证（origin 不是 topic），也允许继续抓取一次验证
+                if (!noImg || origin !== 'topic') this.cache.set(tid, { ...merged, needsImage: true });
             }
 
             // 列表 JSON 的结果也写入跨页面缓存（避免下次进来还要 per-topic 请求）
             try {
-                if (opts?.fromList) this._setPersistentData(tid, { img: merged.img || null, likes: merged.likes || 0, noImg: merged.noImg });
+                if (opts?.fromList) this._setPersistentData(tid, { img: merged.img || null, likes: merged.likes || 0, noImg: merged.noImg, origin: merged.origin || 'list' });
             } catch {}
         },
 
@@ -1853,7 +1862,14 @@
             const ttlMs = cfg.cacheTtlMinutes * 60 * 1000;
             if (cfg.cacheEnabled) {
                 const cachedData = this._getPersistentData(String(tid));
-                if (cachedData) return cachedData;
+                // 兼容旧缓存：若 noImg=true 但未标记为 topic 级别验证，则允许再请求一次确认（避免误判导致永远无封面）
+                if (cachedData) {
+                    if (cachedData.noImg && !cachedData.img && cachedData.origin !== 'topic') {
+                        // bypass
+                    } else {
+                        return cachedData;
+                    }
+                }
             }
 
             const res = await fetch(`/t/topic/${tid}.json`, { headers: { 'Accept': 'application/json' } });
@@ -1910,14 +1926,15 @@
                     if (inOnebox) score -= 10; // onebox 更可能先出现小图；稍微降权但不一刀切
 
                     return { src, score };
-                })
+                }) 
                 .filter((x) => x.score > 0)
                 .sort((a, b) => b.score - a.score);
             
             return {
                 img: imgs.length > 0 ? imgs[0].src : null,
                 likes: json.like_count || 0,
-                noImg: imgs.length === 0
+                noImg: imgs.length === 0,
+                origin: 'topic'
             };
         },
 
@@ -1925,16 +1942,18 @@
             const tid = String(el.dataset.tid);
             const existing = this.cache.get(tid) || { img: null, likes: 0, needsImage: true };
             const noImg = Boolean(data?.noImg);
+            const origin = (data?.origin === 'topic' || data?.origin === 'list') ? data.origin : '';
             const merged = {
                 img: data.img ?? existing.img ?? null,
                 likes: (typeof data.likes === 'number' ? data.likes : existing.likes) ?? 0,
                 needsImage: noImg ? false : !Boolean(data.img),
-                noImg
+                noImg,
+                origin: origin || existing.origin || ''
             };
             this.cache.set(tid, merged);
 
             // 写入跨页面缓存（最小化内容，仅保存必要字段）
-            try { this._setPersistentData(tid, { img: merged.img || null, likes: merged.likes || 0, noImg: merged.noImg }); } catch {}
+            try { this._setPersistentData(tid, { img: merged.img || null, likes: merged.likes || 0, noImg: merged.noImg, origin: merged.origin || 'topic' }); } catch {}
             
             // 更新点赞数
             const likeEl = el.querySelector('.xhs-like-count');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      4.12
+// @version      4.13
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '4.12';
+    const VERSION = '4.13';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -103,6 +103,7 @@
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 60, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
+            overfetchMode: false, // 过加载模式：扩大预取范围（可能增加请求）
             debugMode: false // 调试模式（仅用于排查问题）
         },
         themes: {
@@ -124,6 +125,7 @@
                 cfg.showStats = Boolean(cfg.showStats);
                 cfg.enabled = Boolean(cfg.enabled);
                 cfg.cardStagger = Boolean(cfg.cardStagger);
+                cfg.overfetchMode = Boolean(cfg.overfetchMode);
                 cfg.debugMode = Boolean(cfg.debugMode);
                 return cfg;
             } catch { return this.defaults; }
@@ -188,6 +190,27 @@
         },
         getListKey() {
             return `${window.location.pathname}${window.location.search || ''}`;
+        },
+        saveLastListUrl() {
+            try {
+                if (!this.isListLikePath()) return;
+                const url = `${window.location.pathname}${window.location.search || ''}`;
+                const payload = { url, ts: Date.now() };
+                sessionStorage.setItem('xhs_last_list_url_v1', JSON.stringify(payload));
+            } catch {}
+        },
+        loadLastListUrl() {
+            try {
+                const raw = sessionStorage.getItem('xhs_last_list_url_v1');
+                if (!raw) return '';
+                const obj = JSON.parse(raw);
+                if (!obj || typeof obj !== 'object') return '';
+                if (typeof obj.ts !== 'number' || (Date.now() - obj.ts) > 30 * 60 * 1000) return '';
+                const url = String(obj.url || '');
+                return url.startsWith('/') ? url : '';
+            } catch {
+                return '';
+            }
         },
         saveListScrollState(state) {
             try {
@@ -595,10 +618,10 @@
                     inset: 0;
                     pointer-events: none;
                     z-index: 0;
-                    opacity: ${isDark ? '0.22' : '0.18'};
+                    opacity: ${isDark ? '0.30' : '0.24'};
                     mix-blend-mode: overlay;
                 }
-                .xhs-bg.secondary { opacity: ${isDark ? '0.14' : '0.10'}; filter: blur(0.2px); }
+                .xhs-bg.secondary { opacity: ${isDark ? '0.20' : '0.14'}; filter: blur(0.2px); }
                 .xhs-bg.pat-grid {
                     background-image:
                         repeating-linear-gradient(0deg, rgba(255,255,255,0.18) 0 1px, rgba(0,0,0,0) 1px 14px),
@@ -968,6 +991,7 @@
         bgPatterns: ['pat-grid', 'pat-dots', 'pat-wave', 'pat-rings', 'pat-topo'],
         columns: [],
         currentColumnCount: 0,
+        forceReorderOnNextRender: false,
 
         getListJsonUrl() {
             const path = window.location.pathname;
@@ -1083,6 +1107,12 @@
             if (!this.container) return;
             const cols = Math.max(1, parseInt(desired, 10) || 1);
             const cards = Array.from(this.container.querySelectorAll('.xhs-card[data-tid]'));
+            this.rebuildColumnsWithCards(cards, cols);
+        },
+
+        rebuildColumnsWithCards(cards, desired) {
+            if (!this.container) return;
+            const cols = Math.max(1, parseInt(desired, 10) || 1);
 
             const columns = [];
             for (let i = 0; i < cols; i++) {
@@ -1106,7 +1136,7 @@
                 return idx;
             };
 
-            for (const card of cards) {
+            for (const card of Array.isArray(cards) ? cards : []) {
                 const idx = pickColumnIndex();
                 columns[idx].appendChild(card);
                 // 读一次 scrollHeight 作为下一次分配参考（不做“回溯重排”，保证稳定）
@@ -1315,6 +1345,82 @@
             this.schedulePersistFlush();
         },
 
+        reorderCardsByTidOrder(tidOrder, opts) {
+            if (!this.container) return;
+            const order = Array.isArray(tidOrder) ? tidOrder.map((t) => String(t)).filter(Boolean) : [];
+            if (!order.length) return;
+
+            const cards = Array.from(this.container.querySelectorAll('.xhs-card[data-tid]'));
+            const tidToCard = new Map();
+            for (const card of cards) {
+                const tid = String(card.getAttribute('data-tid') || '');
+                if (!tid || tidToCard.has(tid)) continue;
+                tidToCard.set(tid, card);
+            }
+
+            const ordered = [];
+            const used = new Set();
+            for (const tid of order) {
+                const card = tidToCard.get(tid);
+                if (!card) continue;
+                ordered.push(card);
+                used.add(tid);
+            }
+            for (const card of cards) {
+                const tid = String(card.getAttribute('data-tid') || '');
+                if (tid && used.has(tid)) continue;
+                ordered.push(card);
+            }
+
+            const cfg = Config.get();
+            if (!cfg.cardStagger) {
+                // grid-mode：直接按顺序重新 append
+                this.container.textContent = '';
+                for (const card of ordered) this.container.appendChild(card);
+                return;
+            }
+
+            const desired = this.getDesiredColumnCount();
+            this.rebuildColumnsWithCards(ordered, desired);
+
+            if (opts?.highlightTids && opts.highlightTids.length) {
+                const set = new Set(opts.highlightTids.map((t) => String(t)));
+                requestAnimationFrame(() => {
+                    try {
+                        for (const card of this.container.querySelectorAll('.xhs-card[data-tid]')) {
+                            const tid = String(card.getAttribute('data-tid') || '');
+                            if (tid && set.has(tid)) this.flashCard(card);
+                        }
+                    } catch {}
+                });
+            }
+        },
+
+        resetObserver() {
+            try { this.observer?.disconnect?.(); } catch {}
+            this.observer = new IntersectionObserver((entries) => {
+                entries.forEach(e => {
+                    if (e.isIntersecting) {
+                        const tid = e.target.dataset.tid;
+                        const cached = tid ? this.cache.get(tid) : null;
+                        if (tid && (!cached || cached.needsImage)) {
+                            this.queue.push({ el: e.target, tid });
+                            this.processQueue();
+                        }
+                        this.observer.unobserve(e.target);
+                    }
+                });
+            }, { rootMargin: (Config.get().overfetchMode ? '1600px' : '200px') });
+
+            try {
+                if (this.container) {
+                    this.container.querySelectorAll('.xhs-card[data-tid]').forEach((card) => {
+                        try { this.observer.observe(card); } catch {}
+                    });
+                }
+            } catch {}
+        },
+
         init() {
             this.loadPersistentCache();
             this.ensureListMetaLoaded();
@@ -1331,20 +1437,8 @@
             });
             mo.observe(document.body, { childList: true, subtree: true });
             
-            // 可见性观察器：用于懒加载详情
-            this.observer = new IntersectionObserver((entries) => {
-                entries.forEach(e => {
-                    if (e.isIntersecting) {
-                        const tid = e.target.dataset.tid;
-                        const cached = tid ? this.cache.get(tid) : null;
-                        if (tid && (!cached || cached.needsImage)) {
-                            this.queue.push({ el: e.target, tid });
-                            this.processQueue();
-                        }
-                        this.observer.unobserve(e.target);
-                    }
-                });
-            }, { rootMargin: '200px' });
+            // 可见性观察器：用于懒加载详情（支持“过加载模式”扩大预取范围）
+            this.resetObserver();
 
             // 视口变化时，列数可能变化：仅在“错落布局”模式下重建列（不做全局重排，尽量减少抖动）
             window.addEventListener('resize', Utils.debounce(() => {
@@ -1569,6 +1663,15 @@
                 });
             }
 
+            // v4.13：保持 Discourse 的 latest 顺序（仅在“刷新”语义发生时重排，避免无限下拉时打断阅读）
+            const shouldReorder =
+                this.forceReorderOnNextRender ||
+                (isTopRefresh && (window.scrollY || 0) < 600);
+            if (shouldReorder) {
+                this.forceReorderOnNextRender = false;
+                this.reorderCardsByTidOrder(tidListAll, { highlightTids: bumpedTids });
+            }
+
             rows.forEach(row => {
                 const tid = getTid(row);
                 if (!tid) return;
@@ -1603,7 +1706,7 @@
                 this.observer.observe(card);
             });
 
-            if (bumpedTids.length) {
+            if (bumpedTids.length && !shouldReorder) {
                 requestAnimationFrame(() => {
                     try {
                         const set = new Set(bumpedTids);
@@ -1950,6 +2053,7 @@
                 try {
                     if (!document.body.classList.contains('xhs-on')) return;
                     if (!Utils.isListLikePath()) return;
+                    Utils.saveLastListUrl();
                     Utils.saveListScrollState({ y: window.scrollY });
                 } catch {}
             }, 180));
@@ -1961,7 +2065,43 @@
                     if (!a) return;
                     const card = a.closest?.('.xhs-card[data-tid]');
                     const tid = card?.getAttribute?.('data-tid') || '';
+                    Utils.saveLastListUrl();
                     Utils.saveListScrollState({ y: window.scrollY, tid });
+                } catch {}
+            }, true);
+            // 点左上角 logo 返回：默认会去“/”，但用户更期望回到自己浏览的列表视图并恢复定位
+            document.addEventListener('click', (e) => {
+                try {
+                    if (!Config.get().enabled) return;
+                    // 仅在非列表页（如帖子页）拦截
+                    if (Utils.isListLikePath()) return;
+                    const a = e.target?.closest?.('a');
+                    if (!a) return;
+                    const href = a.getAttribute('href') || a.href || '';
+                    if (!href) return;
+                    const u = new URL(href, window.location.origin);
+                    if (u.origin !== window.location.origin) return;
+                    if (u.pathname !== '/' || (u.search || '')) return;
+                    // 只拦截 header/logo 区域的“回首页”
+                    if (!a.closest?.('.d-header')) return;
+                    const last = Utils.loadLastListUrl();
+                    if (!last || last === '/' ) return; // 没有历史列表或本来就是首页
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    Utils.navigateTo(last);
+                } catch {}
+            }, true);
+            // “查看 xx 个新的或更新的话题”：点击后下一次渲染按最新顺序重排卡片
+            document.addEventListener('click', (e) => {
+                try {
+                    if (!Config.get().enabled) return;
+                    const btn = e.target?.closest?.('button');
+                    const text = (btn?.textContent || '').trim();
+                    if (!btn || !text) return;
+                    if (text.includes('查看') && text.includes('新的') && text.includes('更新') && text.includes('话题')) {
+                        Grid.forceReorderOnNextRender = true;
+                    }
                 } catch {}
             }, true);
 
@@ -2021,6 +2161,7 @@
             const cfg = Config.get();
             if (!cfg.enabled) return;
             if (!Utils.isListLikePath()) return;
+            try { Utils.saveLastListUrl(); } catch {}
 
             // Discourse SPA 下，列表内容可能在 DOMContentLoaded 之后才异步渲染。
             // 因此这里做有限次重试，避免引入高频 setInterval 轮询。
@@ -2048,6 +2189,8 @@
                 });
             } catch {}
             Grid.render();
+            // 过加载模式切换后，需要重建 observer（避免 rootMargin 不生效）
+            try { Grid.resetObserver(); } catch {}
 
             // 返回列表页时尽量恢复到之前位置（先找 tid，再用 scrollY 兜底）
             try {
@@ -2116,6 +2259,8 @@
 
             // 早期防闪烁样式仅用于首屏，配置已应用后立即移除，避免影响其它页面（如消息页）。
             EarlyStyles.remove();
+            // 预取范围可能变化：列表页尝试更新 observer 配置
+            try { if (cfg.enabled && Utils.isListLikePath()) Grid.resetObserver(); } catch {}
 
             // 调试模式：暴露有限的诊断接口
             try {
@@ -2234,6 +2379,13 @@
                                 <div class="xhs-desc">超过后按最近使用自动淘汰</div>
                             </div>
                             <input class="xhs-input" type="number" min="50" max="5000" step="10" value="${cfg.cacheMaxEntries}" data-input="cacheMaxEntries" />
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>过加载模式</div>
+                                <div class="xhs-desc">扩大预取范围，让封面/点赞更早加载（可能增加请求）</div>
+                            </div>
+                            <div class="xhs-switch ${cfg.overfetchMode?'on':''}" data-key="overfetchMode"></div>
                         </div>
                         <div class="xhs-row">
                             <div>

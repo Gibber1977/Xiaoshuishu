@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      4.17
+// @version      1.0
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '4.17';
+    const VERSION = '1.0';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -97,10 +97,15 @@
             enabled: true,
             themeColor: '#C8102E', // 交大红
             showStats: true,
+            showStatLastActivity: true,
+            showStatReplies: true,
+            showStatLikes: true,
+            showStatViews: false,
             darkMode: 'auto', 
             cardStagger: true, // 错落布局
             columnCount: 5, // 列数（桌面端基准）
             metaLayout: 'compact', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
+            authorDisplay: 'full', // 贴主展示：full/avatar/name
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 1440, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
@@ -124,10 +129,15 @@
                 // 基本校验/归一化（避免脏数据导致样式/逻辑异常）
                 cfg.columnCount = Math.min(8, Math.max(2, parseInt(cfg.columnCount, 10) || this.defaults.columnCount));
                 cfg.metaLayout = (cfg.metaLayout === 'spacious' || cfg.metaLayout === 'compact') ? cfg.metaLayout : this.defaults.metaLayout;
+                cfg.authorDisplay = (cfg.authorDisplay === 'full' || cfg.authorDisplay === 'avatar' || cfg.authorDisplay === 'name') ? cfg.authorDisplay : this.defaults.authorDisplay;
                 cfg.cacheTtlMinutes = Math.min(24 * 60, Math.max(1, parseInt(cfg.cacheTtlMinutes, 10) || this.defaults.cacheTtlMinutes));
                 cfg.cacheMaxEntries = Math.min(5000, Math.max(50, parseInt(cfg.cacheMaxEntries, 10) || this.defaults.cacheMaxEntries));
                 cfg.cacheEnabled = Boolean(cfg.cacheEnabled);
                 cfg.showStats = Boolean(cfg.showStats);
+                cfg.showStatLastActivity = (typeof cfg.showStatLastActivity === 'boolean') ? cfg.showStatLastActivity : cfg.showStats;
+                cfg.showStatReplies = (typeof cfg.showStatReplies === 'boolean') ? cfg.showStatReplies : cfg.showStats;
+                cfg.showStatLikes = (typeof cfg.showStatLikes === 'boolean') ? cfg.showStatLikes : cfg.showStats;
+                cfg.showStatViews = (typeof cfg.showStatViews === 'boolean') ? cfg.showStatViews : false;
                 cfg.enabled = Boolean(cfg.enabled);
                 cfg.cardStagger = Boolean(cfg.cardStagger);
                 cfg.overfetchMode = Boolean(cfg.overfetchMode);
@@ -418,13 +428,17 @@
                 .xhs-panel-overlay.show { display: block; opacity: 1; }
                 
                 .xhs-panel {
-                    position: fixed; top: 50%; left: 50%; 
+                    position: fixed; top: 50%; left: 50%;
                     transform: translate(-50%, -50%) scale(0.9);
-                    width: 320px; background: #fff; border-radius: 16px;
+                    width: min(420px, 92vw);
+                    max-height: min(82vh, 760px);
+                    background: #fff; border-radius: 16px;
                     z-index: 99999; opacity: 0; visibility: hidden;
                     box-shadow: 0 10px 40px rgba(0,0,0,0.2);
                     transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
                     overflow: hidden;
+                    display: flex;
+                    flex-direction: column;
                 }
                 .xhs-panel.show { opacity: 1; visibility: visible; transform: translate(-50%, -50%) scale(1); }
                 
@@ -436,12 +450,19 @@
                 .xhs-panel-close { cursor: pointer; font-size: 20px; opacity: 0.8; }
                 .xhs-panel-close:hover { opacity: 1; }
                 
-                .xhs-panel-body { padding: 20px; max-height: 70vh; overflow-y: auto; }
+                .xhs-panel-body { padding: 16px; overflow-y: auto; flex: 1 1 auto; }
                 
-                .xhs-row { 
-                    display: flex; justify-content: space-between; align-items: center;
-                    margin-bottom: 16px; font-size: 14px; color: #333;
+                .xhs-row {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-start;
+                    gap: 12px;
+                    margin-bottom: 12px;
+                    font-size: 14px;
+                    color: #333;
                 }
+                .xhs-row > div:first-child { min-width: 0; }
+                .xhs-desc { font-size: 12px; color: #999; margin-top: 3px; line-height: 1.2; }
                 .xhs-btn {
                     padding: 6px 10px;
                     border-radius: 10px;
@@ -472,8 +493,6 @@
                     background: rgba(0,0,0,0.25);
                     color: rgba(255,255,255,0.9);
                 }
-                .xhs-desc { font-size: 12px; color: #999; margin-top: 2px; }
-                
                 .xhs-switch {
                     width: 40px; height: 22px; background: #ddd; border-radius: 11px;
                     position: relative; cursor: pointer; transition: background 0.2s;
@@ -886,12 +905,19 @@
                 .xhs-user span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                 .xhs-last-activity { display: none; margin-left: auto; white-space: nowrap; opacity: ${isDark ? '0.90' : '0.85'}; }
                 .xhs-last-activity:empty { display: none !important; }
+                body[data-xhs-author-display="avatar"] .xhs-user span { display: none !important; }
+                body[data-xhs-author-display="name"] .xhs-user img.xhs-avatar { display: none !important; }
                 
                 .xhs-stats { display: flex; gap: 8px; flex: 0 0 auto; white-space: nowrap; }
                 .xhs-stat-item { display: flex; align-items: center; gap: 2px; }
                 body[data-xhs-meta-layout=\"spacious\"] .xhs-meta { flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; row-gap: 6px; }
-                body[data-xhs-meta-layout=\"spacious\"] .xhs-last-activity { display: inline-flex; }
+                body[data-xhs-meta-layout=\"spacious\"][data-xhs-stat-last-activity=\"1\"] .xhs-last-activity { display: inline-flex; }
                 body[data-xhs-meta-layout=\"spacious\"] .xhs-stats { flex-basis: 100%; justify-content: flex-start; }
+                body[data-xhs-show-stats="0"] .xhs-stats,
+                body[data-xhs-show-stats="0"] .xhs-last-activity { display: none !important; }
+                body[data-xhs-stat-likes="0"] .xhs-likes { display: none !important; }
+                body[data-xhs-stat-replies="0"] .xhs-replies { display: none !important; }
+                body[data-xhs-stat-views="0"] .xhs-views { display: none !important; }
 
                 /* 标签与置顶 */
                 .xhs-tag {
@@ -986,8 +1012,8 @@
                 }
 
                 /* 统计信息开关（避免重建 DOM） */
-                body[data-xhs-show-stats="0"] .xhs-replies { display: none !important; }
-                body[data-xhs-show-stats="0"] .xhs-views { display: none !important; }
+                body[data-xhs-show-stats="0"] .xhs-stats,
+                body[data-xhs-show-stats="0"] .xhs-last-activity { display: none !important; }
                 
                 /* 暗色模式特定调整 */
                 ${isDark ? `
@@ -2281,7 +2307,7 @@
                         ${userBlockHtml}
                         <span class="xhs-last-activity" ${safeLastActivityTitle ? `title="${safeLastActivityTitle}"` : ''}>${safeLastActivity}</span>
                         <div class="xhs-stats">
-                            <span class="xhs-stat-item">❤️ <span class="xhs-like-count">-</span></span>
+                            <span class="xhs-stat-item xhs-likes">❤️ <span class="xhs-like-count">-</span></span>
                             <span class="xhs-replies">💬 ${replies}</span>
                             <span class="xhs-views">👁️ ${views}</span>
                         </div>
@@ -2693,6 +2719,11 @@
             EarlyStyles.cacheEnabled(cfg.enabled);
             document.body.dataset.xhsShowStats = cfg.showStats ? '1' : '0';
             document.body.dataset.xhsMetaLayout = cfg.metaLayout || 'compact';
+            document.body.dataset.xhsAuthorDisplay = cfg.authorDisplay || 'full';
+            document.body.dataset.xhsStatLastActivity = (cfg.showStats && cfg.showStatLastActivity) ? '1' : '0';
+            document.body.dataset.xhsStatLikes = (cfg.showStats && cfg.showStatLikes) ? '1' : '0';
+            document.body.dataset.xhsStatReplies = (cfg.showStats && cfg.showStatReplies) ? '1' : '0';
+            document.body.dataset.xhsStatViews = (cfg.showStats && cfg.showStatViews) ? '1' : '0';
             
             if (cfg.enabled) {
                 document.body.classList.remove('xhs-on');
@@ -2783,6 +2814,9 @@
             panel.className = 'xhs-panel';
             
             const render = () => {
+                const prevScrollTop = (() => {
+                    try { return panel.querySelector('.xhs-panel-body')?.scrollTop || 0; } catch { return 0; }
+                })();
                 const cfg = Config.get();
                 panel.innerHTML = `
                     <div class="xhs-panel-header">
@@ -2823,10 +2857,49 @@
                         </div>
                         <div class="xhs-row">
                             <div>
+                                <div>贴主展示</div>
+                                <div class="xhs-desc">头像/用户名显示方式</div>
+                            </div>
+                            <select class="xhs-input" data-select="authorDisplay">
+                                <option value="full" ${cfg.authorDisplay === 'full' ? 'selected' : ''}>完整展示</option>
+                                <option value="avatar" ${cfg.authorDisplay === 'avatar' ? 'selected' : ''}>只展示头像</option>
+                                <option value="name" ${cfg.authorDisplay === 'name' ? 'selected' : ''}>只展示用户名</option>
+                            </select>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
                                 <div>显示统计数据</div>
-                                <div class="xhs-desc">回复数、点赞数</div>
+                                <div class="xhs-desc">总开关（更细粒度项在下面）</div>
                             </div>
                             <div class="xhs-switch ${cfg.showStats?'on':''}" data-key="showStats"></div>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>统计：上次回复时间</div>
+                                <div class="xhs-desc">仅“宽松型”元信息布局会显示</div>
+                            </div>
+                            <div class="xhs-switch ${cfg.showStatLastActivity?'on':''}" data-key="showStatLastActivity"></div>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>统计：点赞数</div>
+                                <div class="xhs-desc">❤️</div>
+                            </div>
+                            <div class="xhs-switch ${cfg.showStatLikes?'on':''}" data-key="showStatLikes"></div>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>统计：回复数</div>
+                                <div class="xhs-desc">💬</div>
+                            </div>
+                            <div class="xhs-switch ${cfg.showStatReplies?'on':''}" data-key="showStatReplies"></div>
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>统计：观看数</div>
+                                <div class="xhs-desc">👁️</div>
+                            </div>
+                            <div class="xhs-switch ${cfg.showStatViews?'on':''}" data-key="showStatViews"></div>
                         </div>
                         <div class="xhs-row">
                             <div>
@@ -2907,6 +2980,10 @@
                         </div>
                     </div>
                 `;
+                try {
+                    const body = panel.querySelector('.xhs-panel-body');
+                    if (body) body.scrollTop = prevScrollTop;
+                } catch {}
                 
                 // 绑定关闭事件
                 panel.querySelector('.xhs-panel-close').onclick = (e) => {
@@ -2926,14 +3003,14 @@
                     sw.onclick = () => toggleKey(sw.getAttribute('data-key'));
                 });
                 panel.querySelectorAll('input.xhs-input[data-input]').forEach((input) => {
-                    input.oninput = Utils.debounce(() => {
+                    input.onchange = () => {
                         const k = input.getAttribute('data-input');
                         const raw = input.value;
                         const v = (k === 'imgCropBaseRatio') ? parseFloat(raw) : parseInt(raw, 10);
                         Config.set(k, v);
                         render();
                         App.applyConfig();
-                    }, 120);
+                    };
                 });
                 panel.querySelectorAll('select.xhs-input[data-select]').forEach((sel) => {
                     sel.onchange = () => {

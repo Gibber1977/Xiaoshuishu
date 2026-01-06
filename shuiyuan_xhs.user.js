@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         水源社区小红书模式 Smart (智能配图+设置面板)
 // @namespace    http://tampermonkey.net/
-// @version      4.15
+// @version      4.16
 // @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
 // @author       Gemini Agent & JackyLiii (LinuxDo Original)
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '4.15';
+    const VERSION = '4.16';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -101,7 +101,7 @@
             cardStagger: true, // 错落布局
             columnCount: 5, // 列数（桌面端基准）
             cacheEnabled: true, // 跨页面缓存
-            cacheTtlMinutes: 60, // 缓存有效期（分钟）
+            cacheTtlMinutes: 1440, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
             overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
             imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
@@ -440,6 +440,23 @@
                     display: flex; justify-content: space-between; align-items: center;
                     margin-bottom: 16px; font-size: 14px; color: #333;
                 }
+                .xhs-btn {
+                    padding: 6px 10px;
+                    border-radius: 10px;
+                    border: 1px solid rgba(0,0,0,0.12);
+                    background: rgba(255,255,255,0.95);
+                    color: #333;
+                    cursor: pointer;
+                }
+                body.xhs-dark .xhs-btn {
+                    border: 1px solid rgba(255,255,255,0.16);
+                    background: rgba(0,0,0,0.25);
+                    color: rgba(255,255,255,0.9);
+                }
+                .xhs-btn.danger {
+                    border-color: rgba(var(--xhs-rgb), 0.45);
+                    color: var(--xhs-c);
+                }
                 .xhs-row .xhs-input {
                     width: 88px;
                     padding: 6px 8px;
@@ -512,8 +529,9 @@
 
                 body.xhs-on { background: var(--xhs-bg) !important; }
                 
-                /* 隐藏原生列表 */
-                body.xhs-on .topic-list, body.xhs-on .topic-list-header { display: none !important; }
+                /* 隐藏原生列表（仅在 xhs-grid 真正就绪后才隐藏，避免 SPA 回退/异常导致空白页） */
+                body.xhs-on.xhs-active .topic-list,
+                body.xhs-on.xhs-active .topic-list-header { display: none !important; }
                 
                 /* 瀑布流容器 */
                 .xhs-grid {
@@ -645,10 +663,10 @@
                     inset: 0;
                     pointer-events: none;
                     z-index: 0;
-                    opacity: ${isDark ? '0.30' : '0.24'};
+                    opacity: ${isDark ? '0.42' : '0.32'};
                     mix-blend-mode: overlay;
                 }
-                .xhs-bg.secondary { opacity: ${isDark ? '0.20' : '0.14'}; filter: blur(0.2px); }
+                .xhs-bg.secondary { opacity: ${isDark ? '0.30' : '0.20'}; filter: blur(0.2px); }
                 .xhs-bg.pat-grid {
                     background-image:
                         repeating-linear-gradient(0deg, rgba(255,255,255,0.18) 0 1px, rgba(0,0,0,0) 1px 14px),
@@ -1858,17 +1876,15 @@
 
         async fetchTopic(tid) {
             const cfg = Config.get();
-            const now = Date.now();
-            const ttlMs = cfg.cacheTtlMinutes * 60 * 1000;
             if (cfg.cacheEnabled) {
                 const cachedData = this._getPersistentData(String(tid));
-                // 兼容旧缓存：若 noImg=true 但未标记为 topic 级别验证，则允许再请求一次确认（避免误判导致永远无封面）
+                // 仅当“确实拿到封面图”或“已被 topic.json 验证无图”时才命中缓存；
+                // list.json 的 img=null/noImg=false 只代表“列表没给图”，不能阻止后续抓取 cooked。
                 if (cachedData) {
-                    if (cachedData.noImg && !cachedData.img && cachedData.origin !== 'topic') {
-                        // bypass
-                    } else {
-                        return cachedData;
-                    }
+                    const origin = cachedData.origin;
+                    if (cachedData.img) return cachedData;
+                    if (cachedData.noImg && origin === 'topic') return cachedData;
+                    // 其它情况（含旧缓存/列表缓存/未验证 noImg）继续请求 topic.json 再确认一次
                 }
             }
 
@@ -1878,8 +1894,9 @@
             
             // 提取图片
             const cooked = json.post_stream?.posts?.[0]?.cooked || '';
-            const div = document.createElement('div');
-            div.innerHTML = cooked;
+            // 注意：不要用 div.innerHTML + img.src 直接解析 cooked，会触发浏览器预加载图片，增加网络/服务器压力。
+            // 用 DOMParser + getAttribute 仅提取 URL/尺寸/类名信息。
+            const doc = new DOMParser().parseFromString(cooked, 'text/html');
             
             const isBadImageSrc = (src) => {
                 const s = (src || '').toLowerCase();
@@ -1899,14 +1916,31 @@
                 return Number.isFinite(n) ? n : null;
             };
 
+            const pickSrc = (img) => {
+                if (!img) return '';
+                const raw =
+                    img.getAttribute('src') ||
+                    img.getAttribute('data-src') ||
+                    img.getAttribute('data-original') ||
+                    img.getAttribute('data-orig-src') ||
+                    '';
+                return String(raw || '').trim();
+            };
+            const normalizeUrl = (src) => {
+                const s = String(src || '').trim();
+                if (!s) return '';
+                try { return new URL(s, window.location.origin).href; } catch { return s; }
+            };
+
             // 选择“更像封面图”的图片，避免 onebox/favicon 等小图被误当封面。
-            const imgs = Array.from(div.querySelectorAll('img'))
+            const imgs = Array.from(doc.querySelectorAll('img'))
                 .map((img) => {
-                    const src = img.src || img.getAttribute('src') || '';
+                    const rawSrc = pickSrc(img);
+                    const src = normalizeUrl(rawSrc);
                     const width = getDim(img, 'width');
                     const height = getDim(img, 'height');
                     const inOnebox = Boolean(img.closest?.('.onebox'));
-                    const className = (img.className || '').toLowerCase();
+                    const className = String(img.getAttribute('class') || '').toLowerCase();
                     let score = 10;
 
                     if (!src) score -= 1000;
@@ -2561,6 +2595,7 @@
             this.pendingRenderRetryTimer = null;
 
             document.body.classList.add('xhs-on');
+            document.body.classList.remove('xhs-active');
             document.querySelector('.xhs-grid')?.remove();
             Grid.container = null;
             // 回到列表页时，Discourse 可能复用旧的 row DOM；清掉处理标记，避免“有 grid 但无 cards”
@@ -2570,7 +2605,21 @@
                     delete row.dataset.xhsProcessedTid;
                 });
             } catch {}
-            Grid.render();
+            try {
+                Grid.render();
+            } catch {
+                // 渲染失败时回退到原生列表，避免空白
+                document.body.classList.remove('xhs-on');
+                document.body.classList.remove('xhs-active');
+                document.querySelector('.xhs-grid')?.remove();
+                Grid.container = null;
+                return;
+            }
+            // 仅当容器与卡片确实存在时才进入“active”状态（隐藏原生列表）
+            try {
+                const ok = Boolean(Grid.container && Grid.container.querySelector('.xhs-card'));
+                document.body.classList.toggle('xhs-active', ok);
+            } catch {}
             // 过加载模式切换后，需要重建 observer（避免 rootMargin 不生效）
             try { Grid.resetObserver(); } catch {}
 
@@ -2607,6 +2656,7 @@
             this.lastUrl = location.href;
 
             document.body.classList.remove('xhs-on');
+            document.body.classList.remove('xhs-active');
             this.pendingRenderRetryCount = 0;
             clearTimeout(this.pendingRenderRetryTimer);
             this.pendingRenderRetryTimer = null;
@@ -2625,6 +2675,7 @@
             
             if (cfg.enabled) {
                 document.body.classList.remove('xhs-on');
+                document.body.classList.remove('xhs-active');
                 Styles.injectTheme();
                 if (Utils.isListLikePath()) {
                     if (Grid.container) {
@@ -2634,6 +2685,7 @@
                 }
             } else {
                 document.body.classList.remove('xhs-on');
+                document.body.classList.remove('xhs-active');
                 Styles.removeTheme();
                 document.querySelector('.xhs-grid')?.remove();
                 Grid.container = null;
@@ -2755,9 +2807,16 @@
                         <div class="xhs-row">
                             <div>
                                 <div>缓存有效期（分钟）</div>
-                                <div class="xhs-desc">过期后会重新请求（建议 15~180）</div>
+                                <div class="xhs-desc">过期后会重新请求（默认 1440=24h）</div>
                             </div>
                             <input class="xhs-input" type="number" min="1" max="1440" step="1" value="${cfg.cacheTtlMinutes}" data-input="cacheTtlMinutes" />
+                        </div>
+                        <div class="xhs-row">
+                            <div>
+                                <div>清理缓存</div>
+                                <div class="xhs-desc">清空封面/点赞跨页面缓存（用于修复封面不刷新）</div>
+                            </div>
+                            <button class="xhs-btn danger" type="button" data-action="clearCache">清理</button>
                         </div>
                         <div class="xhs-row">
                             <div>
@@ -2852,6 +2911,13 @@
                         render();
                         Styles.injectTheme();
                     };
+                });
+                panel.querySelector('[data-action="clearCache"]')?.addEventListener('click', () => {
+                    if (!confirm('清空跨页面缓存（封面/点赞）并刷新页面？')) return;
+                    try { GM_setValue('xhs_topic_cache_v1', '{}'); } catch {}
+                    try { Grid.persistentCache = null; } catch {}
+                    try { Grid.cache?.clear?.(); } catch {}
+                    try { location.reload(); } catch {}
                 });
                 panel.querySelector('.xhs-reset').onclick = () => {
                     if (confirm('重置所有设置？')) {

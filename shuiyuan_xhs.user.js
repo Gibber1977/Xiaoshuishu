@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.8
+// @version      1.1.9
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -59,7 +59,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.8';
+    const VERSION = '1.1.9';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -1061,26 +1061,6 @@
                 body[data-xhs-author-display="avatar"] .xhs-user span { display: none !important; }
                 body[data-xhs-author-display="name"] .xhs-user img.xhs-avatar { display: none !important; }
                 
-                .xhs-unread-badge {
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    height: 20px;
-                    min-width: 20px;
-                    padding: 0 8px;
-                    border-radius: 999px;
-                    background: var(--xhs-c);
-                    color: #fff;
-                    font-weight: 800;
-                    font-size: 11px;
-                    text-decoration: none;
-                    box-shadow: 0 2px 6px rgba(0,0,0,0.12);
-                    flex: 0 0 auto;
-                }
-                .xhs-unread-badge:hover { filter: brightness(${isDark ? '1.05' : '0.98'}); }
-                .xhs-unread-badge:active { transform: translateY(0.5px); }
-                body[data-xhs-meta-layout=\"spacious\"] .xhs-unread-stat { margin-left: auto; }
-                body[data-xhs-show-unread-posts=\"0\"] .xhs-unread-badge { display: none !important; }
                 .xhs-replies-link { color: inherit; text-decoration: none; }
                 .xhs-replies-link:hover { color: var(--xhs-c); }
                 
@@ -1430,21 +1410,15 @@
             const tid = String(el?.dataset?.tid || el?.getAttribute?.('data-tid') || '');
             if (!tid) return;
             const cfg = Config.get();
-            const statsEl = el.querySelector('.xhs-stats');
 
-            // 关闭未读数显示：移除现有元素并清理高亮
+            // 未读仅用于封面贴纸与卡片高亮，不在统计区插入额外 DOM
             if (!cfg.showUnreadPosts) {
-                try { statsEl?.querySelector?.('.xhs-unread-badge')?.remove?.(); } catch {}
                 el.classList.remove('xhs-has-unread');
                 return;
             }
 
             const unreadPosts = (typeof meta?.unreadPosts === 'number') ? meta.unreadPosts : (parseInt(meta?.unreadPosts, 10) || 0);
-            if (!statsEl) return;
-
-            const existing = statsEl.querySelector('.xhs-unread-badge');
             if (!unreadPosts || unreadPosts <= 0) {
-                existing?.remove?.();
                 el.classList.remove('xhs-has-unread');
                 el.dataset.unreadPosts = '0';
                 el.dataset.unreadHref = '';
@@ -1464,27 +1438,6 @@
             el.dataset.unreadPosts = String(unreadPosts);
             el.dataset.unreadHref = href;
             el.classList.add('xhs-has-unread');
-
-            const display = Utils.formatNumber(unreadPosts);
-            const title = `您在此话题中有 ${unreadPosts} 个未读帖子`;
-            let badge = existing;
-            if (!badge) {
-                badge = document.createElement('a');
-                badge.className = 'xhs-unread-badge xhs-unread-stat';
-                statsEl.appendChild(badge);
-                badge.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    const u = badge.getAttribute('href') || '';
-                    if (!u || u === '#') return;
-                    Utils.navigateTo(u);
-                }, true);
-            }
-
-            badge.textContent = `未读 ${display}`;
-            badge.setAttribute('href', href);
-            badge.setAttribute('title', title);
         },
 
         applyImageCropForCover(cover, img) {
@@ -2459,10 +2412,6 @@
                     });
                 }
             }
-            const unreadHrefFinal = unreadHref || href || `/t/topic/${encodeURIComponent(tid)}`;
-            const unreadStatHtml = (cfg.showUnreadPosts && unreadNum > 0) ? `
-                <a class="xhs-unread-badge xhs-unread-stat" href="${Utils.escapeHtml(unreadHrefFinal)}" title="您在此话题中有 ${Utils.escapeHtml(unreadDisplay)} 个未读帖子">未读 ${Utils.escapeHtml(unreadDisplay)}</a>
-            ` : '';
             const coverRand = Utils.seededRandom(tid + '_cover2');
             const useDropcap = coverRand() < 0.42 && !emoji;
 
@@ -2517,7 +2466,6 @@
                             <span class="xhs-stat-item xhs-likes">❤️ <span class="xhs-like-count">-</span></span>
                             <a class="xhs-replies xhs-replies-link" href="/t/topic/${Utils.escapeHtml(tid)}/1" aria-label="${Utils.escapeHtml(replies)} 条回复，跳转到第一个帖子">💬 ${replies}</a>
                             <span class="xhs-views">👁️ ${views}</span>
-                            ${unreadStatHtml}
                         </div>
                     </div>
                 </div>
@@ -2535,18 +2483,7 @@
                 }, { once: true });
             });
 
-            // 未读徽标/回复数跳转：走站内导航，避免整页刷新
-            const unreadBadge = card.querySelector('.xhs-unread-stat');
-            if (unreadBadge) {
-                unreadBadge.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    const u = unreadBadge.getAttribute('href') || '';
-                    if (!u || u === '#') return;
-                    Utils.navigateTo(u);
-                }, true);
-            }
+            // 回复数跳转：走站内导航，避免整页刷新
             const repliesLink = card.querySelector('.xhs-replies-link');
             if (repliesLink) {
                 repliesLink.addEventListener('click', (e) => {
@@ -3023,7 +2960,6 @@
             document.body.dataset.xhsMetaLayout = cfg.metaLayout || 'compact';
             document.body.dataset.xhsAuthorDisplay = cfg.authorDisplay || 'full';
             document.body.dataset.xhsStickerEnabled = cfg.stickerEnabled ? '1' : '0';
-            document.body.dataset.xhsShowUnreadPosts = cfg.showUnreadPosts ? '1' : '0';
             document.body.dataset.xhsStatLastActivity = (cfg.showStats && cfg.showStatLastActivity) ? '1' : '0';
             document.body.dataset.xhsStatLikes = (cfg.showStats && cfg.showStatLikes) ? '1' : '0';
             document.body.dataset.xhsStatReplies = (cfg.showStats && cfg.showStatReplies) ? '1' : '0';
@@ -3216,7 +3152,7 @@
                             <div class="xhs-row">
                                 <div>
                                     <div>关注话题未读数</div>
-                                    <div class="xhs-desc">跟踪/关注话题显示“未读 n”（宽松型布局靠右）</div>
+                                    <div class="xhs-desc">跟踪/关注话题的封面贴纸优先显示“未读 n”</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.showUnreadPosts?'on':''}" data-key="showUnreadPosts"></div>
                             </div>

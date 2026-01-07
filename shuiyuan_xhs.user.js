@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.11
+// @version      1.1.12
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
-// @author       十一世纪
+// @author       十一世纪，codex
 // @match        https://shuiyuan.sjtu.edu.cn/*
 // @match        https://shuiyuan.sjtu.edu.cn/latest*
 // @match        https://shuiyuan.sjtu.edu.cn/top*
@@ -14,6 +14,9 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @run-at       document-start
+// @license      MIT
+// @downloadURL  https://update.greasyfork.org/scripts/561704/%E5%B0%8F%E6%B0%B4%E4%B9%A6.user.js
+// @updateURL    https://update.greasyfork.org/scripts/561704/%E5%B0%8F%E6%B0%B4%E4%B9%A6.meta.js
 // ==/UserScript==
 
 (function () {
@@ -59,7 +62,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.11';
+    const VERSION = '1.1.12';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -134,11 +137,11 @@
             enabled: true,
             themeColor: '#C8102E', // 交大红
             showStats: true,
-            statsAlign: 'left', // 统计对齐：left/right/justify（主要用于宽松型布局的 xhs-stats）
+            statsAlign: 'justify', // 统计对齐：left/right/justify（主要用于宽松型布局的 xhs-stats）
             showStatLastActivity: true,
             showStatReplies: true,
             showStatLikes: true,
-            showStatViews: false,
+            showStatViews: true,
             stickerEnabled: true, // 封面贴纸（置顶/精华/热议…；关注话题可优先显示未读）
             showUnreadPosts: true, // 跟踪/关注话题显示未读数（也可用于覆盖贴纸）
             darkMode: 'auto', 
@@ -152,7 +155,7 @@
             cacheMaxEntries: 300, // 缓存条目上限
             overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
             imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
-            imgCropBaseRatio: 1.618, // 裁剪基准比例（宽/高）
+            imgCropBaseRatio: 1.78, // 裁剪基准比例（宽/高）
             rateLimitEnabled: true, // 请求速率限制（降低 429 风险）
             rateMinIntervalMs: 350, // 最小请求间隔（毫秒）
             rateCooldownSeconds: 3, // 遇到 429 的冷却秒数（与 Retry-After 取较大值）
@@ -408,7 +411,7 @@
             const slug = this.parsePrimaryCategorySlug(categoryHref);
             const bySlug = {
                 // 常见 top-level slug -> emoji（允许不全，未知则不显示）
-                'shuiyuan-portal': '📰',   // 水源广场
+                'shuiyuan-portal': '🌊',   // 水源广场
                 'campus-life': '🏫',       // 校园生活
                 'life-experience': '🧭',   // 人生经验
                 'sjtu-study': '📚',        // 学在交大
@@ -416,8 +419,8 @@
                 'leisure-entertainment': '🎮', // 休闲娱乐
                 'technology': '💻',        // 数码科技
                 'ads': '📢',               // 广而告之
-                'clubs': '🤝',             // 社团组织（待确认 slug）
-                'site-affairs': '🛠️',      // 水源站务（待确认 slug）
+                'clubs-organizations': '🤝',             // 社团组织
+                'shuiyuan-affairs': '🛠️',      // 水源站务（待确认 slug）
                 'shuiyuan-events': '🎁',   // 水源活动
             };
             if (slug && bySlug[slug]) return bySlug[slug];
@@ -478,8 +481,9 @@
         injectBase() {
             if (document.getElementById(this.baseId)) return;
             const css = `
-                /* 悬浮按钮 */
-                .xhs-float-btn {
+                /* 设置按钮：优先放到顶部导航（搜索按钮左侧），找不到则用右下角悬浮 */
+                .xhs-float-btn { cursor: pointer; }
+                .xhs-float-btn.xhs-float-fixed {
                     position: fixed;
                     bottom: 20px;
                     right: 20px;
@@ -488,7 +492,6 @@
                     background: #fff;
                     border-radius: 50%;
                     box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                    cursor: pointer;
                     z-index: 99999;
                     display: flex;
                     align-items: center;
@@ -496,9 +499,9 @@
                     transition: transform 0.2s;
                     border: 2px solid var(--xhs-c, #C8102E);
                 }
-                .xhs-float-btn:hover { transform: scale(1.1); }
-                .xhs-float-btn img { width: 28px; height: 28px; object-fit: contain; }
-                .xhs-float-btn .xhs-float-btn-fallback {
+                .xhs-float-btn.xhs-float-fixed:hover { transform: scale(1.1); }
+                .xhs-float-btn.xhs-float-fixed img { width: 28px; height: 28px; object-fit: contain; }
+                .xhs-float-btn.xhs-float-fixed .xhs-float-btn-fallback {
                     width: 28px;
                     height: 28px;
                     display: flex;
@@ -507,6 +510,9 @@
                     font-size: 20px;
                     color: var(--xhs-c, #C8102E);
                 }
+                .xhs-settings-dropdown { display: flex; align-items: center; }
+                .xhs-float-btn.xhs-float-header img { width: 20px; height: 20px; object-fit: contain; border-radius: 6px; }
+                .xhs-float-btn.xhs-float-header .xhs-float-btn-fallback { font-size: 16px; color: var(--xhs-c, #C8102E); }
 
                 /* 设置面板 */
                 .xhs-panel-overlay {
@@ -2953,6 +2959,9 @@
             if (location.href === this.lastUrl) return;
             this.lastUrl = location.href;
 
+            // SPA 路由切换时，顶部导航可能被重渲染：确保设置按钮仍在“搜索”左侧
+            try { this.createFloatBtn(); } catch {}
+
             document.body.classList.remove('xhs-on');
             document.body.classList.remove('xhs-active');
             this.pendingRenderRetryCount = 0;
@@ -3052,20 +3061,48 @@
         },
 
         createFloatBtn() {
-            const btn = document.createElement('div');
-            btn.className = 'xhs-float-btn';
-            btn.title = '小水书设置';
-            // 使用水源Logo
+            // 先清理旧按钮（避免 SPA 重渲染/回退导致重复）
+            try { document.querySelector('.xhs-settings-dropdown')?.remove?.(); } catch {}
+            try { document.querySelector('.xhs-float-btn.xhs-float-fixed')?.remove?.(); } catch {}
+            try { document.querySelector('.xhs-float-btn.xhs-float-header')?.closest?.('li')?.remove?.(); } catch {}
+
+            // 使用水源 Logo
             const iconUrl = 'https://shuiyuan.sjtu.edu.cn/uploads/default/original/4X/3/6/7/367cb152ca2cc40f1cf3e7ede4ff8069727167cc_2_180x180.png';
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn no-text btn-icon icon btn-flat xhs-float-btn xhs-float-header';
+            btn.id = 'xhs-settings-button';
+            btn.title = '小水书设置';
+            btn.setAttribute('aria-label', '小水书设置');
             btn.innerHTML = `<img src="${iconUrl}" alt="设置" />`;
             const iconImg = btn.querySelector('img');
-            iconImg.onerror = () => {
-                btn.innerHTML = `<span class="xhs-float-btn-fallback">⚙️</span>`;
-            };
-            btn.onclick = (e) => {
-                e.preventDefault?.();
+            if (iconImg) {
+                iconImg.onerror = () => {
+                    btn.innerHTML = `<span class="xhs-float-btn-fallback">⚙️</span>`;
+                };
+            }
+            btn.addEventListener('click', (e) => {
+                try { e.preventDefault?.(); } catch {}
                 App.openSettingsPanel();
-            };
+            }, true);
+
+            // 优先插入到顶部导航：放在搜索按钮（magnifying-glass）左侧
+            const searchLi =
+                document.querySelector('.d-header-icons li.header-dropdown-toggle.search-dropdown') ||
+                document.querySelector('#search-button')?.closest?.('li');
+            const ul = searchLi?.parentElement;
+            if (searchLi && ul && ul.tagName === 'UL') {
+                const li = document.createElement('li');
+                li.className = 'header-dropdown-toggle xhs-settings-dropdown';
+                li.appendChild(btn);
+                ul.insertBefore(li, searchLi);
+                return;
+            }
+
+            // 兜底：右下角悬浮按钮
+            btn.classList.remove('xhs-float-header');
+            btn.classList.add('xhs-float-fixed');
             document.body.appendChild(btn);
         },
 

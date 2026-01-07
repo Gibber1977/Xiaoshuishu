@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.7
+// @version      1.1.8
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -59,7 +59,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.7';
+    const VERSION = '1.1.8';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -138,6 +138,8 @@
             showStatReplies: true,
             showStatLikes: true,
             showStatViews: false,
+            stickerEnabled: true, // 封面贴纸（置顶/精华/热议…；关注话题可优先显示未读）
+            showUnreadPosts: true, // 跟踪/关注话题显示未读数（也可用于覆盖贴纸）
             darkMode: 'auto', 
             cardStagger: true, // 错落布局
             columnCount: 4, // 列数（桌面端基准）
@@ -185,6 +187,8 @@
                 cfg.showStatReplies = (typeof cfg.showStatReplies === 'boolean') ? cfg.showStatReplies : cfg.showStats;
                 cfg.showStatLikes = (typeof cfg.showStatLikes === 'boolean') ? cfg.showStatLikes : cfg.showStats;
                 cfg.showStatViews = (typeof cfg.showStatViews === 'boolean') ? cfg.showStatViews : false;
+                cfg.stickerEnabled = (typeof cfg.stickerEnabled === 'boolean') ? cfg.stickerEnabled : this.defaults.stickerEnabled;
+                cfg.showUnreadPosts = (typeof cfg.showUnreadPosts === 'boolean') ? cfg.showUnreadPosts : this.defaults.showUnreadPosts;
                 cfg.enabled = Boolean(cfg.enabled);
                 cfg.cardStagger = Boolean(cfg.cardStagger);
                 cfg.overfetchMode = Boolean(cfg.overfetchMode);
@@ -955,6 +959,17 @@
                     backdrop-filter: blur(6px);
                     transform: rotate(6deg);
                 }
+                .xhs-sticker.xhs-sticker-unread {
+                    color: #fff;
+                    background: rgba(var(--xhs-rgb), ${isDark ? '0.72' : '0.92'});
+                    border: 1px solid rgba(var(--xhs-rgb), ${isDark ? '0.35' : '0.22'});
+                    box-shadow: 0 12px 26px rgba(var(--xhs-rgb), ${isDark ? '0.30' : '0.26'});
+                    transform: rotate(2deg);
+                    letter-spacing: 0.2px;
+                }
+                .xhs-card.xhs-has-unread {
+                    box-shadow: 0 0 0 3px rgba(var(--xhs-rgb), ${isDark ? '0.18' : '0.14'}), 0 10px 28px rgba(0,0,0,0.10);
+                }
                 
                 /* 关键词高亮：每套文字封面可通过 --hl-color 自定义 */
                 .xhs-hl { 
@@ -1050,9 +1065,9 @@
                     display: inline-flex;
                     align-items: center;
                     justify-content: center;
-                    height: 18px;
-                    min-width: 18px;
-                    padding: 0 6px;
+                    height: 20px;
+                    min-width: 20px;
+                    padding: 0 8px;
                     border-radius: 999px;
                     background: var(--xhs-c);
                     color: #fff;
@@ -1064,6 +1079,8 @@
                 }
                 .xhs-unread-badge:hover { filter: brightness(${isDark ? '1.05' : '0.98'}); }
                 .xhs-unread-badge:active { transform: translateY(0.5px); }
+                body[data-xhs-meta-layout=\"spacious\"] .xhs-unread-stat { margin-left: auto; }
+                body[data-xhs-show-unread-posts=\"0\"] .xhs-unread-badge { display: none !important; }
                 .xhs-replies-link { color: inherit; text-decoration: none; }
                 .xhs-replies-link:hover { color: var(--xhs-c); }
                 
@@ -1412,13 +1429,23 @@
         applyUnreadMetaToCard(el, meta) {
             const tid = String(el?.dataset?.tid || el?.getAttribute?.('data-tid') || '');
             if (!tid) return;
-            const unreadPosts = (typeof meta?.unreadPosts === 'number') ? meta.unreadPosts : (parseInt(meta?.unreadPosts, 10) || 0);
-            const metaEl = el.querySelector('.xhs-meta');
-            if (!metaEl) return;
+            const cfg = Config.get();
+            const statsEl = el.querySelector('.xhs-stats');
 
-            const existing = metaEl.querySelector('.xhs-unread-badge');
+            // 关闭未读数显示：移除现有元素并清理高亮
+            if (!cfg.showUnreadPosts) {
+                try { statsEl?.querySelector?.('.xhs-unread-badge')?.remove?.(); } catch {}
+                el.classList.remove('xhs-has-unread');
+                return;
+            }
+
+            const unreadPosts = (typeof meta?.unreadPosts === 'number') ? meta.unreadPosts : (parseInt(meta?.unreadPosts, 10) || 0);
+            if (!statsEl) return;
+
+            const existing = statsEl.querySelector('.xhs-unread-badge');
             if (!unreadPosts || unreadPosts <= 0) {
                 existing?.remove?.();
+                el.classList.remove('xhs-has-unread');
                 el.dataset.unreadPosts = '0';
                 el.dataset.unreadHref = '';
                 return;
@@ -1436,16 +1463,15 @@
 
             el.dataset.unreadPosts = String(unreadPosts);
             el.dataset.unreadHref = href;
+            el.classList.add('xhs-has-unread');
 
+            const display = Utils.formatNumber(unreadPosts);
             const title = `您在此话题中有 ${unreadPosts} 个未读帖子`;
             let badge = existing;
             if (!badge) {
                 badge = document.createElement('a');
-                badge.className = 'xhs-unread-badge';
-                // 插到 last-activity 前面（或 stats 前）
-                const ref = metaEl.querySelector('.xhs-last-activity') || metaEl.querySelector('.xhs-stats');
-                if (ref?.before) ref.before(badge);
-                else metaEl.appendChild(badge);
+                badge.className = 'xhs-unread-badge xhs-unread-stat';
+                statsEl.appendChild(badge);
                 badge.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1456,7 +1482,7 @@
                 }, true);
             }
 
-            badge.textContent = String(unreadPosts);
+            badge.textContent = `未读 ${display}`;
             badge.setAttribute('href', href);
             badge.setAttribute('title', title);
         },
@@ -1721,6 +1747,7 @@
 
             const likeEl = el.querySelector('.xhs-like-count');
             if (likeEl) likeEl.textContent = String(merged.likes ?? 0);
+            try { this.updateStickerForCard(el, merged.likes ?? 0); } catch {}
 
             // 作者信息（移动端列表常见：DOM 里拿不到头像/用户名，这里用 list.json 补齐）
             try {
@@ -2369,6 +2396,7 @@
             const unreadText = unreadAnchor?.textContent?.trim?.() || '';
             const unreadHref = unreadAnchor?.getAttribute?.('href') || unreadAnchor?.href || '';
             const unreadNum = Utils.parseCount(unreadText);
+            const cfg = Config.get();
             let featuredDomain = '';
             if (featuredLink) {
                 try {
@@ -2391,6 +2419,7 @@
             card.dataset.userName = userCard || user || '';
             card.dataset.unreadPosts = String(unreadNum || 0);
             card.dataset.unreadHref = String(unreadHref || '');
+            if (cfg.showUnreadPosts && unreadNum > 0) card.classList.add('xhs-has-unread');
 
             // 1. 生成初始封面（默认文字版，稍后异步加载图片）
             const rand = Utils.seededRandom(tid);
@@ -2408,18 +2437,32 @@
             const tagPillsHtml = tagNames.slice(0, 4).map((t) => `<span class="xhs-tag-pill" data-tag-name="${Utils.escapeHtml(t)}" title="跳转到标签：${Utils.escapeHtml(t)}">#${Utils.escapeHtml(t)}</span>`).join('');
             const extraTags = tagNames.length > 4 ? `+${tagNames.length - 4}` : '';
             const decoLayersHtml = this._generateTextCoverLayers(tid, watermarkEmoji);
-            const stickerText = this._pickTextCoverSticker(tid, {
-                categoryLabel,
-                tagNames,
-                pinned,
-                featuredDomain,
-                title,
-                excerpt,
-                replyNum,
-                viewNum,
-                likes: (this.listTopicMeta.get(String(tid))?.likes ?? 0),
-                categoryName: category
-            });
+            const unreadDisplay = unreadText || Utils.formatNumber(unreadNum);
+            let stickerText = '';
+            let stickerIsUnread = false;
+            if (cfg.stickerEnabled) {
+                if (cfg.showUnreadPosts && unreadNum > 0) {
+                    stickerText = `未读 ${unreadDisplay}`;
+                    stickerIsUnread = true;
+                } else {
+                    stickerText = this._pickTextCoverSticker(tid, {
+                        categoryLabel,
+                        tagNames,
+                        pinned,
+                        featuredDomain,
+                        title,
+                        excerpt,
+                        replyNum,
+                        viewNum,
+                        likes: (this.listTopicMeta.get(String(tid))?.likes ?? 0),
+                        categoryName: category
+                    });
+                }
+            }
+            const unreadHrefFinal = unreadHref || href || `/t/topic/${encodeURIComponent(tid)}`;
+            const unreadStatHtml = (cfg.showUnreadPosts && unreadNum > 0) ? `
+                <a class="xhs-unread-badge xhs-unread-stat" href="${Utils.escapeHtml(unreadHrefFinal)}" title="您在此话题中有 ${Utils.escapeHtml(unreadDisplay)} 个未读帖子">未读 ${Utils.escapeHtml(unreadDisplay)}</a>
+            ` : '';
             const coverRand = Utils.seededRandom(tid + '_cover2');
             const useDropcap = coverRand() < 0.42 && !emoji;
 
@@ -2439,7 +2482,7 @@
                     ` : ''}
                     ${pinned ? `<span class="xhs-pin">📌</span>` : ''}
                     ${featuredDomain ? `<span class="xhs-link-badge">🔗 ${Utils.escapeHtml(featuredDomain)}</span>` : ''}
-                    ${stickerText ? `<span class="xhs-sticker">${Utils.escapeHtml(stickerText)}</span>` : ''}
+                    ${stickerText ? `<span class="xhs-sticker${stickerIsUnread ? ' xhs-sticker-unread' : ''}">${Utils.escapeHtml(stickerText)}</span>` : ''}
                 </div>
             `;
 
@@ -2450,11 +2493,6 @@
             const safeAvatar = Utils.escapeHtml(avatar || '');
             const safeLastActivity = Utils.escapeHtml(lastActivity || '');
             const safeLastActivityTitle = Utils.escapeHtml(lastActivityTitle || '');
-            const safeUnreadText = Utils.escapeHtml(unreadText || '');
-            const safeUnreadHref = Utils.escapeHtml(unreadHref || '');
-            const unreadBadgeHtml = (unreadNum > 0) ? `
-                <a class="xhs-unread-badge" href="${safeUnreadHref || '#'}" title="您在此话题中有 ${safeUnreadText} 个未读帖子">${safeUnreadText}</a>
-            ` : '';
             const userBlockHtml = (userCard && userHref) ? `
                 <a class="xhs-user trigger-user-card" href="${safeUserHref}" data-user-card="${safeUserCard}" data-topic-id="${Utils.escapeHtml(tid)}" data-include-post-count-for="${Utils.escapeHtml(tid)}" aria-label="${safeUserCard}，访问个人资料">
                     <img class="xhs-avatar avatar" src="${safeAvatar}">
@@ -2474,12 +2512,12 @@
                     <a class="xhs-title" href="${href}">${safeTitle}</a>
                     <div class="xhs-meta">
                         ${userBlockHtml}
-                        ${unreadBadgeHtml}
                         <span class="xhs-last-activity" ${safeLastActivityTitle ? `title="${safeLastActivityTitle}"` : ''}>${safeLastActivity}</span>
                         <div class="xhs-stats">
                             <span class="xhs-stat-item xhs-likes">❤️ <span class="xhs-like-count">-</span></span>
                             <a class="xhs-replies xhs-replies-link" href="/t/topic/${Utils.escapeHtml(tid)}/1" aria-label="${Utils.escapeHtml(replies)} 条回复，跳转到第一个帖子">💬 ${replies}</a>
                             <span class="xhs-views">👁️ ${views}</span>
+                            ${unreadStatHtml}
                         </div>
                     </div>
                 </div>
@@ -2498,7 +2536,7 @@
             });
 
             // 未读徽标/回复数跳转：走站内导航，避免整页刷新
-            const unreadBadge = card.querySelector('.xhs-unread-badge');
+            const unreadBadge = card.querySelector('.xhs-unread-stat');
             if (unreadBadge) {
                 unreadBadge.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -2589,6 +2627,7 @@
             const tid = String(el.dataset?.tid || '');
             if (!tid) return;
 
+            const cfg = Config.get();
             const tagNames = String(el.dataset?.tags || '').split('\n').map((t) => t.trim()).filter(Boolean);
             const pinned = String(el.dataset?.pinned || '') === '1';
             const featuredDomain = String(el.dataset?.featuredDomain || '');
@@ -2597,28 +2636,42 @@
             const viewNum = Utils.parseCount(el.dataset?.viewNum);
             const categoryLabel = categoryName;
 
-            const text = this._pickTextCoverSticker(tid, {
-                pinned,
-                tagNames,
-                featuredDomain,
-                categoryName,
-                categoryLabel,
-                replyNum,
-                viewNum,
-                likes: Number(likesOverride) || 0
-            });
-
             const existing = cover.querySelector('.xhs-sticker');
+            if (!cfg.stickerEnabled) {
+                existing?.remove();
+                return;
+            }
+
+            const unreadPosts = cfg.showUnreadPosts ? Utils.parseCount(el.dataset?.unreadPosts) : 0;
+            let text = '';
+            let isUnread = false;
+            if (cfg.showUnreadPosts && unreadPosts > 0) {
+                text = `未读 ${Utils.formatNumber(unreadPosts)}`;
+                isUnread = true;
+            } else {
+                text = this._pickTextCoverSticker(tid, {
+                    pinned,
+                    tagNames,
+                    featuredDomain,
+                    categoryName,
+                    categoryLabel,
+                    replyNum,
+                    viewNum,
+                    likes: Number(likesOverride) || 0
+                });
+            }
+
             if (!text) {
                 existing?.remove();
                 return;
             }
             if (existing) {
                 existing.textContent = text;
+                existing.classList.toggle('xhs-sticker-unread', isUnread);
                 return;
             }
             const sticker = document.createElement('span');
-            sticker.className = 'xhs-sticker';
+            sticker.className = `xhs-sticker${isUnread ? ' xhs-sticker-unread' : ''}`;
             sticker.textContent = text;
             cover.appendChild(sticker);
         },
@@ -2969,6 +3022,8 @@
             document.body.dataset.xhsShowStats = cfg.showStats ? '1' : '0';
             document.body.dataset.xhsMetaLayout = cfg.metaLayout || 'compact';
             document.body.dataset.xhsAuthorDisplay = cfg.authorDisplay || 'full';
+            document.body.dataset.xhsStickerEnabled = cfg.stickerEnabled ? '1' : '0';
+            document.body.dataset.xhsShowUnreadPosts = cfg.showUnreadPosts ? '1' : '0';
             document.body.dataset.xhsStatLastActivity = (cfg.showStats && cfg.showStatLastActivity) ? '1' : '0';
             document.body.dataset.xhsStatLikes = (cfg.showStats && cfg.showStatLikes) ? '1' : '0';
             document.body.dataset.xhsStatReplies = (cfg.showStats && cfg.showStatReplies) ? '1' : '0';
@@ -2996,6 +3051,18 @@
             EarlyStyles.remove();
             // 预取范围可能变化：列表页尝试更新 observer 配置
             try { if (cfg.enabled && Utils.isListLikePath()) Grid.resetObserver(); } catch {}
+            // 不强制重渲染列表：直接更新现有卡片的贴纸/未读状态
+            try {
+                if (cfg.enabled && Utils.isListLikePath()) {
+                    document.querySelectorAll('.xhs-card[data-tid]').forEach((card) => {
+                        const tid = String(card.getAttribute('data-tid') || '');
+                        const likes = Utils.parseCount(card.querySelector('.xhs-like-count')?.textContent || '0');
+                        Grid.updateStickerForCard(card, likes);
+                        const meta = Grid.listTopicMeta.get(tid) || { unreadPosts: Utils.parseCount(card.dataset?.unreadPosts) || 0 };
+                        Grid.applyUnreadMetaToCard(card, meta);
+                    });
+                }
+            } catch {}
 
             // 调试模式：暴露有限的诊断接口
             try {
@@ -3138,6 +3205,20 @@
                                     <div class="xhs-desc">总开关（更细粒度项在下面）</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.showStats?'on':''}" data-key="showStats"></div>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>封面贴纸</div>
+                                    <div class="xhs-desc">置顶/精华/热议等；关注话题会优先显示未读</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.stickerEnabled?'on':''}" data-key="stickerEnabled"></div>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>关注话题未读数</div>
+                                    <div class="xhs-desc">跟踪/关注话题显示“未读 n”（宽松型布局靠右）</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.showUnreadPosts?'on':''}" data-key="showUnreadPosts"></div>
                             </div>
                             <div class="xhs-row">
                                 <div>

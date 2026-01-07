@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.6
+// @version      1.1.7
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -59,7 +59,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.6';
+    const VERSION = '1.1.7';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -152,7 +152,7 @@
             imgCropBaseRatio: 1.618, // 裁剪基准比例（宽/高）
             rateLimitEnabled: true, // 请求速率限制（降低 429 风险）
             rateMinIntervalMs: 350, // 最小请求间隔（毫秒）
-            rateCooldownSeconds: 5, // 遇到 429 的冷却秒数（与 Retry-After 取较大值）
+            rateCooldownSeconds: 3, // 遇到 429 的冷却秒数（与 Retry-After 取较大值）
             rateAutoTune: true, // 遇到 429 自动放慢，成功后缓慢恢复
             debugMode: true, // 调试模式（仅用于排查问题）
             panelCollapsed: { layout: false, stats: false, cache: false, images: false, advanced: true, theme: false } // 设置面板折叠状态
@@ -1046,6 +1046,27 @@
                 body[data-xhs-author-display="avatar"] .xhs-user span { display: none !important; }
                 body[data-xhs-author-display="name"] .xhs-user img.xhs-avatar { display: none !important; }
                 
+                .xhs-unread-badge {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    height: 18px;
+                    min-width: 18px;
+                    padding: 0 6px;
+                    border-radius: 999px;
+                    background: var(--xhs-c);
+                    color: #fff;
+                    font-weight: 800;
+                    font-size: 11px;
+                    text-decoration: none;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+                    flex: 0 0 auto;
+                }
+                .xhs-unread-badge:hover { filter: brightness(${isDark ? '1.05' : '0.98'}); }
+                .xhs-unread-badge:active { transform: translateY(0.5px); }
+                .xhs-replies-link { color: inherit; text-decoration: none; }
+                .xhs-replies-link:hover { color: var(--xhs-c); }
+                
                 .xhs-stats { display: flex; gap: 8px; flex: 0 0 auto; white-space: nowrap; }
                 .xhs-stat-item { display: flex; align-items: center; gap: 2px; }
                 body[data-xhs-meta-layout=\"spacious\"] .xhs-meta { flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; row-gap: 6px; }
@@ -1299,10 +1320,31 @@
                         if (!tid) continue;
                         const img = t.image_url || t.thumbnail_url || null;
                         const likes = typeof t.like_count === 'number' ? t.like_count : 0;
+                        const views = typeof t.views === 'number' ? t.views : 0;
+                        const replyCount = typeof t.reply_count === 'number' ? t.reply_count : 0;
+                        const postsCount = typeof t.posts_count === 'number' ? t.posts_count : 0;
+                        const highestPostNumber = typeof t.highest_post_number === 'number' ? t.highest_post_number : 0;
+                        const unreadPosts = typeof t.unread_posts === 'number' ? t.unread_posts : 0;
+                        const newPosts = typeof t.new_posts === 'number' ? t.new_posts : 0;
+                        const lastReadPostNumber = typeof t.last_read_post_number === 'number' ? t.last_read_post_number : 0;
                         const tags = Array.isArray(t.tags) ? t.tags : [];
                         const featuredLink = t.featured_link || '';
                         const author = pickAuthor(t);
-                        this.listTopicMeta.set(tid, { img, likes, tags, featuredLink, author, origin: 'list' });
+                        this.listTopicMeta.set(tid, {
+                            img,
+                            likes,
+                            views,
+                            replyCount,
+                            postsCount,
+                            highestPostNumber,
+                            unreadPosts,
+                            newPosts,
+                            lastReadPostNumber,
+                            tags,
+                            featuredLink,
+                            author,
+                            origin: 'list'
+                        });
                     }
 
                     // 列表元信息加载完成后，尽可能填充现有卡片（减少 per-topic 请求）。
@@ -1365,6 +1407,58 @@
                 el.dataset.userName = username;
                 el.dataset.userHref = block.getAttribute('href') || '';
             }
+        },
+
+        applyUnreadMetaToCard(el, meta) {
+            const tid = String(el?.dataset?.tid || el?.getAttribute?.('data-tid') || '');
+            if (!tid) return;
+            const unreadPosts = (typeof meta?.unreadPosts === 'number') ? meta.unreadPosts : (parseInt(meta?.unreadPosts, 10) || 0);
+            const metaEl = el.querySelector('.xhs-meta');
+            if (!metaEl) return;
+
+            const existing = metaEl.querySelector('.xhs-unread-badge');
+            if (!unreadPosts || unreadPosts <= 0) {
+                existing?.remove?.();
+                el.dataset.unreadPosts = '0';
+                el.dataset.unreadHref = '';
+                return;
+            }
+
+            const lastRead = (typeof meta?.lastReadPostNumber === 'number') ? meta.lastReadPostNumber : (parseInt(meta?.lastReadPostNumber, 10) || 0);
+            const highest = (typeof meta?.highestPostNumber === 'number') ? meta.highestPostNumber : (parseInt(meta?.highestPostNumber, 10) || 0);
+            let href = String(el.dataset.unreadHref || '');
+            if (!href || href === '#') {
+                let firstUnread = 1;
+                if (lastRead > 0) firstUnread = lastRead + 1;
+                else if (highest > 0) firstUnread = Math.max(1, highest - unreadPosts + 1);
+                href = `/t/topic/${encodeURIComponent(tid)}/${firstUnread}`;
+            }
+
+            el.dataset.unreadPosts = String(unreadPosts);
+            el.dataset.unreadHref = href;
+
+            const title = `您在此话题中有 ${unreadPosts} 个未读帖子`;
+            let badge = existing;
+            if (!badge) {
+                badge = document.createElement('a');
+                badge.className = 'xhs-unread-badge';
+                // 插到 last-activity 前面（或 stats 前）
+                const ref = metaEl.querySelector('.xhs-last-activity') || metaEl.querySelector('.xhs-stats');
+                if (ref?.before) ref.before(badge);
+                else metaEl.appendChild(badge);
+                badge.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    const u = badge.getAttribute('href') || '';
+                    if (!u || u === '#') return;
+                    Utils.navigateTo(u);
+                }, true);
+            }
+
+            badge.textContent = String(unreadPosts);
+            badge.setAttribute('href', href);
+            badge.setAttribute('title', title);
         },
 
         applyImageCropForCover(cover, img) {
@@ -1631,6 +1725,11 @@
             // 作者信息（移动端列表常见：DOM 里拿不到头像/用户名，这里用 list.json 补齐）
             try {
                 if (meta.author) this.applyAuthorMetaToCard(el, meta.author);
+            } catch {}
+            
+            // 未读帖子（跟踪/关注的话题会在 list.json 里提供 unread_posts/last_read_post_number）
+            try {
+                this.applyUnreadMetaToCard(el, meta);
             } catch {}
 
             if (merged.img) {
@@ -2264,6 +2363,12 @@
             const lastActivityTitle = lastActivityEl?.getAttribute?.('title') || '';
             const excerpt = row.querySelector('.topic-excerpt')?.textContent?.trim() || title;
             const pinned = row.classList.contains('pinned');
+            const unreadAnchor =
+                row.querySelector('.topic-post-badges a.badge-notification.unread-posts') ||
+                row.querySelector('a.badge-notification.unread-posts');
+            const unreadText = unreadAnchor?.textContent?.trim?.() || '';
+            const unreadHref = unreadAnchor?.getAttribute?.('href') || unreadAnchor?.href || '';
+            const unreadNum = Utils.parseCount(unreadText);
             let featuredDomain = '';
             if (featuredLink) {
                 try {
@@ -2284,6 +2389,8 @@
             card.dataset.categoryName = category || '';
             card.dataset.userHref = userHref || '';
             card.dataset.userName = userCard || user || '';
+            card.dataset.unreadPosts = String(unreadNum || 0);
+            card.dataset.unreadHref = String(unreadHref || '');
 
             // 1. 生成初始封面（默认文字版，稍后异步加载图片）
             const rand = Utils.seededRandom(tid);
@@ -2343,6 +2450,11 @@
             const safeAvatar = Utils.escapeHtml(avatar || '');
             const safeLastActivity = Utils.escapeHtml(lastActivity || '');
             const safeLastActivityTitle = Utils.escapeHtml(lastActivityTitle || '');
+            const safeUnreadText = Utils.escapeHtml(unreadText || '');
+            const safeUnreadHref = Utils.escapeHtml(unreadHref || '');
+            const unreadBadgeHtml = (unreadNum > 0) ? `
+                <a class="xhs-unread-badge" href="${safeUnreadHref || '#'}" title="您在此话题中有 ${safeUnreadText} 个未读帖子">${safeUnreadText}</a>
+            ` : '';
             const userBlockHtml = (userCard && userHref) ? `
                 <a class="xhs-user trigger-user-card" href="${safeUserHref}" data-user-card="${safeUserCard}" data-topic-id="${Utils.escapeHtml(tid)}" data-include-post-count-for="${Utils.escapeHtml(tid)}" aria-label="${safeUserCard}，访问个人资料">
                     <img class="xhs-avatar avatar" src="${safeAvatar}">
@@ -2362,10 +2474,11 @@
                     <a class="xhs-title" href="${href}">${safeTitle}</a>
                     <div class="xhs-meta">
                         ${userBlockHtml}
+                        ${unreadBadgeHtml}
                         <span class="xhs-last-activity" ${safeLastActivityTitle ? `title="${safeLastActivityTitle}"` : ''}>${safeLastActivity}</span>
                         <div class="xhs-stats">
                             <span class="xhs-stat-item xhs-likes">❤️ <span class="xhs-like-count">-</span></span>
-                            <span class="xhs-replies">💬 ${replies}</span>
+                            <a class="xhs-replies xhs-replies-link" href="/t/topic/${Utils.escapeHtml(tid)}/1" aria-label="${Utils.escapeHtml(replies)} 条回复，跳转到第一个帖子">💬 ${replies}</a>
                             <span class="xhs-views">👁️ ${views}</span>
                         </div>
                     </div>
@@ -2383,6 +2496,30 @@
                     img.style.display = 'none';
                 }, { once: true });
             });
+
+            // 未读徽标/回复数跳转：走站内导航，避免整页刷新
+            const unreadBadge = card.querySelector('.xhs-unread-badge');
+            if (unreadBadge) {
+                unreadBadge.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    const u = unreadBadge.getAttribute('href') || '';
+                    if (!u || u === '#') return;
+                    Utils.navigateTo(u);
+                }, true);
+            }
+            const repliesLink = card.querySelector('.xhs-replies-link');
+            if (repliesLink) {
+                repliesLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    const u = repliesLink.getAttribute('href') || '';
+                    if (!u || u === '#') return;
+                    Utils.navigateTo(u);
+                }, true);
+            }
 
             // 让标签/分类可点击（阻止卡片整体链接的默认跳转）
             card.querySelectorAll('.xhs-tag-pill[data-tag-name]').forEach((pill) => {

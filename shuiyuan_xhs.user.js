@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         小水书（瀑布流模式 + 智能封面 + 设置面板）
+// @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.3
-// @description  超级智能版：自动提取帖子正文图片作为封面，内置设置面板，支持暗色模式，针对水源优化的关键词高亮
-// @author       Gemini Agent & JackyLiii (LinuxDo Original)
+// @version      1.1.4
+// @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
+// @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
 // @match        https://shuiyuan.sjtu.edu.cn/latest*
 // @match        https://shuiyuan.sjtu.edu.cn/top*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.3';
+    const VERSION = '1.1.4';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -106,13 +106,17 @@
             columnCount: 4, // 列数（桌面端基准）
             metaLayout: 'spacious', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
             authorDisplay: 'full', // 贴主展示：full/avatar/name
-            pillScale: 1.20, // 分类/标签 pill 的大小缩放（1.00=原始）
+            pillScale: 1.00, // 分类/标签 pill 的大小缩放（1.00=原始）
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 1440, // 缓存有效期（分钟）
             cacheMaxEntries: 300, // 缓存条目上限
             overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
             imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
             imgCropBaseRatio: 1.618, // 裁剪基准比例（宽/高）
+            rateLimitEnabled: true, // 请求速率限制（降低 429 风险）
+            rateMinIntervalMs: 350, // 最小请求间隔（毫秒）
+            rateCooldownSeconds: 5, // 遇到 429 的冷却秒数（与 Retry-After 取较大值）
+            rateAutoTune: true, // 遇到 429 自动放慢，成功后缓慢恢复
             debugMode: true, // 调试模式（仅用于排查问题）
             panelCollapsed: { layout: false, stats: false, cache: false, images: false, advanced: true, theme: false } // 设置面板折叠状态
         },
@@ -153,6 +157,10 @@
                     if (!Number.isFinite(n)) return this.defaults.imgCropBaseRatio;
                     return Math.min(3.0, Math.max(0.6, n));
                 })();
+                cfg.rateLimitEnabled = (typeof cfg.rateLimitEnabled === 'boolean') ? cfg.rateLimitEnabled : this.defaults.rateLimitEnabled;
+                cfg.rateMinIntervalMs = Math.min(5000, Math.max(120, parseInt(cfg.rateMinIntervalMs, 10) || this.defaults.rateMinIntervalMs));
+                cfg.rateCooldownSeconds = Math.min(60, Math.max(1, parseInt(cfg.rateCooldownSeconds, 10) || this.defaults.rateCooldownSeconds));
+                cfg.rateAutoTune = (typeof cfg.rateAutoTune === 'boolean') ? cfg.rateAutoTune : this.defaults.rateAutoTune;
                 cfg.debugMode = Boolean(cfg.debugMode);
                 // 设置面板折叠状态
                 try {
@@ -404,6 +412,10 @@
                 h ^= h + Math.imul(h ^ h >>> 7, h | 61);
                 return ((h ^ h >>> 14) >>> 0) / 4294967296;
             };
+        },
+        sleep(ms) {
+            const t = Number(ms) || 0;
+            return new Promise((resolve) => setTimeout(resolve, Math.max(0, t)));
         }
     };
 
@@ -866,7 +878,16 @@
                 .xhs-deco.quote.tl { top: 8px; left: 10px; }
                 .xhs-deco.quote.br { bottom: 8px; right: 12px; }
 
-                .xhs-emoji-icon { position: relative; z-index: 1; font-size: 44px; margin-bottom: 12px; }
+                .xhs-emoji-icon {
+                    position: relative;
+                    z-index: 1;
+                    font-size: 52px;
+                    margin-bottom: 10px;
+                    transition: transform 0.18s ease;
+                    transform-origin: left center;
+                    filter: drop-shadow(0 6px 14px rgba(0,0,0,0.10));
+                }
+                .xhs-card:hover .xhs-emoji-icon { transform: scale(1.10) rotate(-7deg); }
                 .xhs-text-excerpt { 
                     position: relative;
                     z-index: 1;
@@ -1151,12 +1172,20 @@
         bodyObserver: null,
         renderedTids: null,
         
-        // 速率限制配置
+        // 请求速率限制（默认开启；遇到 429 自动放慢）
         rateLimit: {
-            lastReq: 0,
-            interval: 300, // 最小间隔 300ms
-            cooldown: 0    // 冷却时间
+            enabled: true,
+            baseInterval: 350,  // 来自配置：最小请求间隔（ms）
+            interval: 350,      // 当前动态间隔（ms）
+            maxInterval: 2500,  // 自动放慢上限
+            cooldownUntil: 0,   // 冷却到某时间点（ms 时间戳）
+            cooldownMs: 5000,   // 冷却时长（ms，和 Retry-After 取较大值）
+            autoTune: true,
+            lastReqAt: 0,
+            last429At: 0,
+            tuned: false
         },
+        rateLimitLock: Promise.resolve(),
 
         persistentCache: null,
         persistFlushTimer: null,
@@ -1167,9 +1196,10 @@
         listTopicMeta: new Map(),
         listOrderTop: [],
         lastFirstTid: '',
-        cornerDecos: ['✦', '✶', '✷', '✧', '✺', '✹', '✸', '❖', '❂', '✣', '✤', '✪', '✫'],
+        cornerDecos: ['╭', '╮', '╰', '╯', '┌', '┐', '└', '┘', '「', '」', '『', '』', '✦', '✶', '✷', '✧', '✺', '✹', '✸', '❖', '❂', '✣', '✤', '✪', '✫'],
         lineChars: ['·', '•', '∙', '⋯', '─', '═', '—', '~', '≈', '✦', '✶', '✷'],
         bgPatterns: ['pat-grid', 'pat-dots', 'pat-wave', 'pat-rings', 'pat-topo'],
+        textCoverEmojis: ['💡', '📝', '✨', '🎯', '📚', '🧭', '🔧', '☕', '🌊', '🧩', '📌', '🎨', '🎮', '💻', '📰', '📢'],
         columns: [],
         currentColumnCount: 0,
         forceReorderOnNextRender: false,
@@ -1196,7 +1226,7 @@
             this.listTopicMeta = new Map();
             this.listMetaPromise = (async () => {
                 try {
-                    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+                    const res = await this._rateLimitedFetch(url, { headers: { 'Accept': 'application/json' } });
                     if (!res.ok) return;
                     const json = await res.json();
                     // users[] -> id -> { username, avatarTemplate }
@@ -1784,6 +1814,7 @@
 
         init() {
             this.loadPersistentCache();
+            this.applyRateLimitConfig();
             this.ensureListMetaLoaded();
             this.setupListUpdating();
             window.addEventListener('xhs-route-change', Utils.debounce(() => {
@@ -1810,37 +1841,102 @@
             }, 180));
         },
 
+        applyRateLimitConfig() {
+            const cfg = Config.get();
+            const rl = this.rateLimit;
+            rl.enabled = Boolean(cfg.rateLimitEnabled);
+            rl.autoTune = Boolean(cfg.rateAutoTune);
+            rl.baseInterval = Number(cfg.rateMinIntervalMs) || 350;
+            rl.cooldownMs = (Number(cfg.rateCooldownSeconds) || 5) * 1000;
+            if (!Number.isFinite(rl.interval) || rl.interval <= 0) rl.interval = rl.baseInterval;
+            rl.interval = Math.min(rl.maxInterval, Math.max(rl.baseInterval, rl.interval));
+            if (!Number.isFinite(rl.lastReqAt)) rl.lastReqAt = 0;
+            if (!Number.isFinite(rl.cooldownUntil)) rl.cooldownUntil = 0;
+        },
+
+        async _withRateLimitLock(fn) {
+            const prev = this.rateLimitLock;
+            let release;
+            this.rateLimitLock = new Promise((r) => { release = r; });
+            try { await prev; } catch {}
+            try { return await fn(); } finally { try { release?.(); } catch {} }
+        },
+
+        _parseRetryAfterMs(res) {
+            try {
+                const v = res?.headers?.get?.('Retry-After');
+                if (!v) return 0;
+                const n = parseInt(v, 10);
+                if (Number.isFinite(n) && n >= 0) return n * 1000;
+                const t = Date.parse(v);
+                if (Number.isFinite(t)) return Math.max(0, t - Date.now());
+                return 0;
+            } catch { return 0; }
+        },
+
+        async _rateLimitedFetch(url, init) {
+            const cfg = Config.get();
+            if (!cfg.rateLimitEnabled) return fetch(url, init);
+
+            return await this._withRateLimitLock(async () => {
+                const rl = this.rateLimit;
+                const now0 = Date.now();
+
+                // 冷却优先
+                if (now0 < rl.cooldownUntil) await Utils.sleep(rl.cooldownUntil - now0);
+
+                // 最小间隔
+                const now1 = Date.now();
+                const next = (rl.lastReqAt || 0) + (rl.interval || rl.baseInterval || 350);
+                if (now1 < next) await Utils.sleep(next - now1);
+
+                rl.lastReqAt = Date.now();
+                const res = await fetch(url, init);
+
+                if (res.status === 429) {
+                    const retryAfter = this._parseRetryAfterMs(res);
+                    rl.last429At = Date.now();
+                    rl.cooldownUntil = rl.last429At + Math.max(rl.cooldownMs || 0, retryAfter || 0);
+                    if (rl.autoTune) {
+                        rl.interval = Math.min(rl.maxInterval || 2500, Math.ceil((rl.interval || rl.baseInterval || 350) * 1.6));
+                        rl.tuned = true;
+                    }
+                } else if (res.ok) {
+                    // 成功后缓慢恢复到 baseInterval
+                    if (rl.autoTune && rl.interval > rl.baseInterval) {
+                        rl.interval = Math.max(rl.baseInterval, rl.interval - 40);
+                    } else if (!rl.autoTune) {
+                        rl.interval = Math.max(rl.baseInterval, Math.min(rl.maxInterval || 2500, rl.interval || rl.baseInterval));
+                    }
+                }
+
+                return res;
+            });
+        },
+
         // 处理请求队列 (带退避算法)
         async processQueue() {
             if (this.processing || !this.queue.length) return;
             this.processing = true;
-
-            const now = Date.now();
-            if (now < this.rateLimit.cooldown) {
-                setTimeout(() => { this.processing = false; this.processQueue(); }, this.rateLimit.cooldown - now);
-                return;
-            }
 
             const { el, tid } = this.queue.shift();
             
             try {
                 const data = await this.fetchTopic(tid);
                 this.updateCard(el, data);
-                this.rateLimit.interval = 300; // 成功则重置间隔
             } catch (e) {
                 // 失败（如429），增加冷却并放回队列
                 if (e.status === 429) {
-                    this.rateLimit.cooldown = now + 5000; // 冷却5秒
                     this.queue.unshift({ el, tid }); // 放回队头
                 }
                 console.warn('[XHS] Fetch error:', e);
             }
 
-            // 间隔处理下一个
+            // 继续处理下一个（实际节流由 _rateLimitedFetch 控制）
             setTimeout(() => {
                 this.processing = false;
                 this.processQueue();
-            }, this.rateLimit.interval);
+            }, 0);
         },
 
         async fetchTopic(tid) {
@@ -1857,7 +1953,7 @@
                 }
             }
 
-            const res = await fetch(`/t/topic/${tid}.json`, { headers: { 'Accept': 'application/json' } });
+            const res = await this._rateLimitedFetch(`/t/topic/${tid}.json`, { headers: { 'Accept': 'application/json' } });
             if (!res.ok) throw { status: res.status };
             const json = await res.json();
             
@@ -2174,7 +2270,8 @@
             const processedExcerpt = this.processText(excerpt, tid);
             const primaryEmoji = Utils.getPrimaryCategoryEmoji(categoryHref, category);
             const categoryLabel = category ? (primaryEmoji ? `${primaryEmoji} ${category}` : category) : '';
-            const watermarkEmoji = (primaryEmoji || (emoji ? emoji : '✦')).trim();
+            const coverEmoji = (emoji || primaryEmoji || this._pickTextCoverEmoji(tid)).trim();
+            const watermarkEmoji = (coverEmoji || '✦').trim();
             const tagPillsHtml = tagNames.slice(0, 4).map((t) => `<span class="xhs-tag-pill" data-tag-name="${Utils.escapeHtml(t)}" title="跳转到标签：${Utils.escapeHtml(t)}">#${Utils.escapeHtml(t)}</span>`).join('');
             const extraTags = tagNames.length > 4 ? `+${tagNames.length - 4}` : '';
             const decoLayersHtml = this._generateTextCoverLayers(tid, watermarkEmoji);
@@ -2197,7 +2294,7 @@
                 <div class="xhs-cover">
                     <div class="xhs-text-cover s${styleIdx}">
                         ${decoLayersHtml}
-                        ${emoji ? `<div class="xhs-emoji-icon">${emoji}</div>` : ''}
+                        ${coverEmoji ? `<div class="xhs-emoji-icon" aria-hidden="true">${Utils.escapeHtml(coverEmoji)}</div>` : ''}
                         <div class="xhs-text-excerpt ${useDropcap ? 'dropcap' : ''}">${processedExcerpt}</div>
                     </div>
                     ${(categoryLabel || tagPillsHtml) ? `
@@ -2284,6 +2381,14 @@
                 }, true);
             }
             return card;
+        },
+
+        _pickTextCoverEmoji(seed) {
+            const rand = Utils.seededRandom(String(seed) + '_emoji');
+            const arr = Array.isArray(this.textCoverEmojis) ? this.textCoverEmojis : [];
+            if (!arr.length) return '✨';
+            const idx = Math.floor(rand() * arr.length);
+            return String(arr[Math.min(arr.length - 1, Math.max(0, idx))] || '✨');
         },
 
         _pickTextCoverSticker(seed, info) {
@@ -2387,14 +2492,12 @@
             if (rand() < 0.28) html += `<span class="xhs-deco tape t1"></span>`;
             if (rand() < 0.18) html += `<span class="xhs-deco tape t2"></span>`;
 
-            // 角落装饰：0-4 个，偏向 2-3 个
+            // 角落装饰：尽量“有装饰”（至少 2 个角）
             const corners = ['tl', 'tr', 'bl', 'br'];
             const r = rand();
             let cornerCount;
-            if (r < 0.05) cornerCount = 0;
-            else if (r < 0.15) cornerCount = 1;
-            else if (r < 0.50) cornerCount = 2;
-            else if (r < 0.85) cornerCount = 3;
+            if (r < 0.58) cornerCount = 2;
+            else if (r < 0.86) cornerCount = 3;
             else cornerCount = 4;
             const pickedCorners = [...corners].sort(() => rand() - 0.5).slice(0, cornerCount);
             for (const pos of pickedCorners) {
@@ -2402,8 +2505,8 @@
                 html += `<span class="xhs-deco corner ${pos}">${deco}</span>`;
             }
 
-            // 线条装饰：最多两条
-            const lineCount = rand() < 0.62 ? 1 : (rand() < 0.28 ? 2 : 0);
+            // 线条装饰：尽量“有纹理”（至少 1 条线）
+            const lineCount = rand() < 0.30 ? 2 : 1;
             const linePositions = ['line-t', 'line-b'];
             for (let i = 0; i < lineCount; i++) {
                 const ch = this.lineChars[Math.floor(rand() * this.lineChars.length)];
@@ -2705,6 +2808,7 @@
         applyConfig() {
             const cfg = Config.get();
             EarlyStyles.cacheEnabled(cfg.enabled);
+            try { Grid.applyRateLimitConfig(); } catch {}
             document.body.dataset.xhsShowStats = cfg.showStats ? '1' : '0';
             document.body.dataset.xhsMetaLayout = cfg.metaLayout || 'compact';
             document.body.dataset.xhsAuthorDisplay = cfg.authorDisplay || 'full';
@@ -2970,6 +3074,34 @@
                         <div class="xhs-section ${cfg.panelCollapsed?.advanced ? 'xhs-collapsed' : ''}" data-section="advanced">
                             <div class="xhs-section-title" data-section-title="advanced">高级</div>
                             <div class="xhs-section-body">
+                            <div class="xhs-row">
+                                <div>
+                                    <div>请求速率限制</div>
+                                    <div class="xhs-desc">降低 429 风险；当前间隔 ${(Grid.rateLimit?.interval || cfg.rateMinIntervalMs)}ms（基础 ${cfg.rateMinIntervalMs}ms）</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.rateLimitEnabled?'on':''}" data-key="rateLimitEnabled"></div>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>最小请求间隔</div>
+                                    <div class="xhs-desc">单位毫秒（越小越激进）</div>
+                                </div>
+                                <input class="xhs-input" type="number" min="120" max="5000" step="10" value="${cfg.rateMinIntervalMs}" data-input="rateMinIntervalMs" />
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>429 冷却秒数</div>
+                                    <div class="xhs-desc">遇到 429 至少等待这么久（与 Retry-After 取较大值）</div>
+                                </div>
+                                <input class="xhs-input" type="number" min="1" max="60" step="1" value="${cfg.rateCooldownSeconds}" data-input="rateCooldownSeconds" />
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>自动调速</div>
+                                    <div class="xhs-desc">遇到 429 自动放慢，成功后缓慢恢复</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.rateAutoTune?'on':''}" data-key="rateAutoTune"></div>
+                            </div>
                             <div class="xhs-row">
                                 <div>
                                     <div>调试模式</div>

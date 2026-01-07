@@ -108,7 +108,7 @@
             authorDisplay: 'full', // 贴主展示：full/avatar/name
             pillScale: 1.00, // 分类/标签 pill 的大小缩放（1.00=原始）
             cacheEnabled: true, // 跨页面缓存
-            cacheTtlMinutes: 1440, // 缓存有效期（分钟）
+            cacheTtlMinutes: 20160, // 缓存有效期（分钟）- 14天
             cacheMaxEntries: 300, // 缓存条目上限
             overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
             imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
@@ -140,7 +140,7 @@
                     if (!Number.isFinite(n)) return this.defaults.pillScale;
                     return Math.min(1.8, Math.max(0.85, n));
                 })();
-                cfg.cacheTtlMinutes = Math.min(24 * 60, Math.max(1, parseInt(cfg.cacheTtlMinutes, 10) || this.defaults.cacheTtlMinutes));
+                cfg.cacheTtlMinutes = Math.min(14 * 24 * 60, Math.max(1, parseInt(cfg.cacheTtlMinutes, 10) || this.defaults.cacheTtlMinutes));
                 cfg.cacheMaxEntries = Math.min(5000, Math.max(50, parseInt(cfg.cacheMaxEntries, 10) || this.defaults.cacheMaxEntries));
                 cfg.cacheEnabled = Boolean(cfg.cacheEnabled);
                 cfg.showStats = Boolean(cfg.showStats);
@@ -3006,9 +3006,9 @@
                             <div class="xhs-row">
                                 <div>
                                     <div>缓存有效期（分钟）</div>
-                                    <div class="xhs-desc">过期后会重新请求（默认 1440=24h）</div>
+                                    <div class="xhs-desc">过期后会重新请求（默认 20160=14 days）</div>
                                 </div>
-                                <input class="xhs-input" type="number" min="1" max="1440" step="1" value="${cfg.cacheTtlMinutes}" data-input="cacheTtlMinutes" />
+                                <input class="xhs-input" type="number" min="1" max="129600" step="1" value="${cfg.cacheTtlMinutes}" data-input="cacheTtlMinutes" />
                             </div>
                             <div class="xhs-row">
                                 <div>

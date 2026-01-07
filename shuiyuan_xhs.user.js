@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.9
+// @version      1.1.10
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -59,7 +59,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.9';
+    const VERSION = '1.1.10';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -1700,7 +1700,6 @@
 
             const likeEl = el.querySelector('.xhs-like-count');
             if (likeEl) likeEl.textContent = String(merged.likes ?? 0);
-            try { this.updateStickerForCard(el, merged.likes ?? 0); } catch {}
 
             // 作者信息（移动端列表常见：DOM 里拿不到头像/用户名，这里用 list.json 补齐）
             try {
@@ -1711,6 +1710,9 @@
             try {
                 this.applyUnreadMetaToCard(el, meta);
             } catch {}
+            
+            // 贴纸优先级：未读更新往往晚于点赞/封面，必须在 applyUnreadMetaToCard 之后再算一次
+            try { this.updateStickerForCard(el, merged.likes ?? 0); } catch {}
 
             if (merged.img) {
                 const cover = el.querySelector('.xhs-cover');
@@ -2993,9 +2995,9 @@
                     document.querySelectorAll('.xhs-card[data-tid]').forEach((card) => {
                         const tid = String(card.getAttribute('data-tid') || '');
                         const likes = Utils.parseCount(card.querySelector('.xhs-like-count')?.textContent || '0');
-                        Grid.updateStickerForCard(card, likes);
                         const meta = Grid.listTopicMeta.get(tid) || { unreadPosts: Utils.parseCount(card.dataset?.unreadPosts) || 0 };
                         Grid.applyUnreadMetaToCard(card, meta);
+                        Grid.updateStickerForCard(card, likes);
                     });
                 }
             } catch {}

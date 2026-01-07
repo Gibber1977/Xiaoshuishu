@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.5
+// @version      1.1.6
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -19,10 +19,47 @@
 (function () {
     'use strict';
 
+    // Safari Userscripts 等环境可能不提供 GM_* API：在脚本内部做最小兼容层兜底。
+    // - Tampermonkey：直接走原生 GM_*。
+    // - 无 GM_*：退化到 localStorage（或内存）存储 + DOM <style> 注入。
+    const __xhsMemStore = new Map();
+    const __xhsStorageKey = (k) => `__xhs_gm__${String(k || '')}`;
+    const GM_getValue = (typeof window.GM_getValue === 'function')
+        ? window.GM_getValue.bind(window)
+        : (key, defaultValue) => {
+            try {
+                const v = localStorage.getItem(__xhsStorageKey(key));
+                return v === null ? defaultValue : v;
+            } catch {
+                return __xhsMemStore.has(key) ? __xhsMemStore.get(key) : defaultValue;
+            }
+        };
+    const GM_setValue = (typeof window.GM_setValue === 'function')
+        ? window.GM_setValue.bind(window)
+        : (key, value) => {
+            try {
+                localStorage.setItem(__xhsStorageKey(key), String(value));
+            } catch {
+                __xhsMemStore.set(key, value);
+            }
+        };
+    const GM_addStyle = (typeof window.GM_addStyle === 'function')
+        ? window.GM_addStyle.bind(window)
+        : (css) => {
+            try {
+                const style = document.createElement('style');
+                style.textContent = String(css || '');
+                (document.head || document.documentElement).appendChild(style);
+                return style;
+            } catch {
+                return null;
+            }
+        };
+
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.5';
+    const VERSION = '1.1.6';
 
     /* ============================================
      * 0. 早期防闪烁逻辑

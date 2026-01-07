@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.4
+// @version      1.1.5
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -22,7 +22,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.4';
+    const VERSION = '1.1.5';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -878,16 +878,7 @@
                 .xhs-deco.quote.tl { top: 8px; left: 10px; }
                 .xhs-deco.quote.br { bottom: 8px; right: 12px; }
 
-                .xhs-emoji-icon {
-                    position: relative;
-                    z-index: 1;
-                    font-size: 52px;
-                    margin-bottom: 10px;
-                    transition: transform 0.18s ease;
-                    transform-origin: left center;
-                    filter: drop-shadow(0 6px 14px rgba(0,0,0,0.10));
-                }
-                .xhs-card:hover .xhs-emoji-icon { transform: scale(1.10) rotate(-7deg); }
+                .xhs-emoji-icon { font-size: 44px; margin-bottom: 12px; position: relative; z-index: 1; }
                 .xhs-text-excerpt { 
                     position: relative;
                     z-index: 1;
@@ -1196,10 +1187,9 @@
         listTopicMeta: new Map(),
         listOrderTop: [],
         lastFirstTid: '',
-        cornerDecos: ['╭', '╮', '╰', '╯', '┌', '┐', '└', '┘', '「', '」', '『', '』', '✦', '✶', '✷', '✧', '✺', '✹', '✸', '❖', '❂', '✣', '✤', '✪', '✫'],
+        cornerDecos: ['✦', '✶', '✷', '✧', '✺', '✹', '✸', '❖', '❂', '✣', '✤', '✪', '✫'],
         lineChars: ['·', '•', '∙', '⋯', '─', '═', '—', '~', '≈', '✦', '✶', '✷'],
         bgPatterns: ['pat-grid', 'pat-dots', 'pat-wave', 'pat-rings', 'pat-topo'],
-        textCoverEmojis: ['💡', '📝', '✨', '🎯', '📚', '🧭', '🔧', '☕', '🌊', '🧩', '📌', '🎨', '🎮', '💻', '📰', '📢'],
         columns: [],
         currentColumnCount: 0,
         forceReorderOnNextRender: false,
@@ -2270,8 +2260,7 @@
             const processedExcerpt = this.processText(excerpt, tid);
             const primaryEmoji = Utils.getPrimaryCategoryEmoji(categoryHref, category);
             const categoryLabel = category ? (primaryEmoji ? `${primaryEmoji} ${category}` : category) : '';
-            const coverEmoji = (emoji || primaryEmoji || this._pickTextCoverEmoji(tid)).trim();
-            const watermarkEmoji = (coverEmoji || '✦').trim();
+            const watermarkEmoji = (primaryEmoji || (emoji ? emoji : '✦')).trim();
             const tagPillsHtml = tagNames.slice(0, 4).map((t) => `<span class="xhs-tag-pill" data-tag-name="${Utils.escapeHtml(t)}" title="跳转到标签：${Utils.escapeHtml(t)}">#${Utils.escapeHtml(t)}</span>`).join('');
             const extraTags = tagNames.length > 4 ? `+${tagNames.length - 4}` : '';
             const decoLayersHtml = this._generateTextCoverLayers(tid, watermarkEmoji);
@@ -2294,7 +2283,7 @@
                 <div class="xhs-cover">
                     <div class="xhs-text-cover s${styleIdx}">
                         ${decoLayersHtml}
-                        ${coverEmoji ? `<div class="xhs-emoji-icon" aria-hidden="true">${Utils.escapeHtml(coverEmoji)}</div>` : ''}
+                        ${emoji ? `<div class="xhs-emoji-icon">${emoji}</div>` : ''}
                         <div class="xhs-text-excerpt ${useDropcap ? 'dropcap' : ''}">${processedExcerpt}</div>
                     </div>
                     ${(categoryLabel || tagPillsHtml) ? `
@@ -2381,14 +2370,6 @@
                 }, true);
             }
             return card;
-        },
-
-        _pickTextCoverEmoji(seed) {
-            const rand = Utils.seededRandom(String(seed) + '_emoji');
-            const arr = Array.isArray(this.textCoverEmojis) ? this.textCoverEmojis : [];
-            if (!arr.length) return '✨';
-            const idx = Math.floor(rand() * arr.length);
-            return String(arr[Math.min(arr.length - 1, Math.max(0, idx))] || '✨');
         },
 
         _pickTextCoverSticker(seed, info) {
@@ -2492,12 +2473,14 @@
             if (rand() < 0.28) html += `<span class="xhs-deco tape t1"></span>`;
             if (rand() < 0.18) html += `<span class="xhs-deco tape t2"></span>`;
 
-            // 角落装饰：尽量“有装饰”（至少 2 个角）
+            // 角落装饰：0-4 个，偏向 2-3 个
             const corners = ['tl', 'tr', 'bl', 'br'];
             const r = rand();
             let cornerCount;
-            if (r < 0.58) cornerCount = 2;
-            else if (r < 0.86) cornerCount = 3;
+            if (r < 0.05) cornerCount = 0;
+            else if (r < 0.15) cornerCount = 1;
+            else if (r < 0.50) cornerCount = 2;
+            else if (r < 0.85) cornerCount = 3;
             else cornerCount = 4;
             const pickedCorners = [...corners].sort(() => rand() - 0.5).slice(0, cornerCount);
             for (const pos of pickedCorners) {
@@ -2505,8 +2488,8 @@
                 html += `<span class="xhs-deco corner ${pos}">${deco}</span>`;
             }
 
-            // 线条装饰：尽量“有纹理”（至少 1 条线）
-            const lineCount = rand() < 0.30 ? 2 : 1;
+            // 线条装饰：最多两条
+            const lineCount = rand() < 0.62 ? 1 : (rand() < 0.28 ? 2 : 0);
             const linePositions = ['line-t', 'line-b'];
             for (let i = 0; i < lineCount; i++) {
                 const ch = this.lineChars[Math.floor(rand() * this.lineChars.length)];

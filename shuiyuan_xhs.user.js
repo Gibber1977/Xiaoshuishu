@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.12
+// @version      1.1.13
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪，codex
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -62,7 +62,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.12';
+    const VERSION = '1.1.13';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -144,7 +144,7 @@
             showStatViews: true,
             stickerEnabled: true, // 封面贴纸（置顶/精华/热议…；关注话题可优先显示未读）
             showUnreadPosts: true, // 跟踪/关注话题显示未读数（也可用于覆盖贴纸）
-            darkMode: 'auto', 
+            darkMode: 'auto', // 深色模式：auto(跟随站点/系统)/dark/light
             cardStagger: true, // 错落布局
             columnCount: 4, // 列数（桌面端基准）
             metaLayout: 'spacious', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
@@ -178,6 +178,7 @@
                 cfg.columnCount = Math.min(8, Math.max(2, parseInt(cfg.columnCount, 10) || this.defaults.columnCount));
                 cfg.metaLayout = (cfg.metaLayout === 'spacious' || cfg.metaLayout === 'compact') ? cfg.metaLayout : this.defaults.metaLayout;
                 cfg.statsAlign = (cfg.statsAlign === 'left' || cfg.statsAlign === 'right' || cfg.statsAlign === 'justify') ? cfg.statsAlign : this.defaults.statsAlign;
+                cfg.darkMode = (cfg.darkMode === 'auto' || cfg.darkMode === 'dark' || cfg.darkMode === 'light') ? cfg.darkMode : this.defaults.darkMode;
                 cfg.authorDisplay = (cfg.authorDisplay === 'full' || cfg.authorDisplay === 'avatar' || cfg.authorDisplay === 'name') ? cfg.authorDisplay : this.defaults.authorDisplay;
                 cfg.pillScale = (() => {
                     const n = parseFloat(cfg.pillScale);
@@ -247,6 +248,58 @@
      * 2. 工具模块
      * ============================================ */
     const Utils = {
+        getCssVar(name) {
+            const k = String(name || '').trim();
+            if (!k) return '';
+            try {
+                return getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+            } catch {
+                return '';
+            }
+        },
+        parseCssColorToRgb(color) {
+            const s = String(color || '').trim();
+            if (!s) return null;
+            // #rgb / #rrggbb
+            const hex3 = /^#([0-9a-f]{3})$/i.exec(s);
+            if (hex3) {
+                const h = hex3[1];
+                const r = parseInt(h[0] + h[0], 16);
+                const g = parseInt(h[1] + h[1], 16);
+                const b = parseInt(h[2] + h[2], 16);
+                return { r, g, b };
+            }
+            const hex6 = /^#([0-9a-f]{6})$/i.exec(s);
+            if (hex6) {
+                const h = hex6[1];
+                const r = parseInt(h.slice(0, 2), 16);
+                const g = parseInt(h.slice(2, 4), 16);
+                const b = parseInt(h.slice(4, 6), 16);
+                return { r, g, b };
+            }
+            // rgb()/rgba()
+            const rgb = /^rgba?\(([^)]+)\)$/i.exec(s);
+            if (rgb) {
+                const parts = rgb[1].split(',').map((v) => parseFloat(v.trim()));
+                if (parts.length >= 3 && parts.every((v) => Number.isFinite(v))) {
+                    const r = Math.min(255, Math.max(0, parts[0]));
+                    const g = Math.min(255, Math.max(0, parts[1]));
+                    const b = Math.min(255, Math.max(0, parts[2]));
+                    return { r, g, b };
+                }
+            }
+            return null;
+        },
+        relativeLuminance(rgb) {
+            const toLin = (c) => {
+                const v = (Number(c) || 0) / 255;
+                return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+            };
+            const r = toLin(rgb?.r);
+            const g = toLin(rgb?.g);
+            const b = toLin(rgb?.b);
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        },
         hexToRgb(hex) {
             const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
             return r ? `${parseInt(r[1], 16)}, ${parseInt(r[2], 16)}, ${parseInt(r[3], 16)}` : '200, 16, 46';
@@ -349,6 +402,16 @@
             const c = Config.get();
             if (c.darkMode === 'dark') return true;
             if (c.darkMode === 'light') return false;
+            // Discourse 允许独立于系统切换主题：优先从站点 CSS 变量推断
+            try {
+                const bg = this.getCssVar('--secondary') || this.getCssVar('--header_background');
+                const rgb = this.parseCssColorToRgb(bg);
+                if (rgb) {
+                    const lum = this.relativeLuminance(rgb);
+                    // 背景亮度较低 => 深色主题
+                    if (Number.isFinite(lum)) return lum < 0.45;
+                }
+            } catch {}
             return window.matchMedia?.('(prefers-color-scheme: dark)').matches;
         },
         escapeHtml(str) {
@@ -684,6 +747,18 @@
             const c = cfg.themeColor;
             const rgb = Utils.hexToRgb(c);
             const isDark = Utils.isDarkMode();
+            // 深色主题下尽量对齐 Discourse 自身配色，避免“站点已是深色但脚本仍按浅色渲染”导致观感割裂
+            const discourseVars = {
+                secondary: Utils.getCssVar('--secondary'),
+                secondaryHigh: Utils.getCssVar('--secondary-high'),
+                secondaryVeryHigh: Utils.getCssVar('--secondary-very-high'),
+                primary: Utils.getCssVar('--primary'),
+                primaryMedium: Utils.getCssVar('--primary-medium')
+            };
+            const xhsBg = isDark ? (discourseVars.secondary || '#1a1a1a') : '#f4f6f8';
+            const xhsCardBg = isDark ? (discourseVars.secondaryVeryHigh || discourseVars.secondaryHigh || '#2d2d2d') : '#fff';
+            const xhsText = isDark ? (discourseVars.primary || '#eee') : '#333';
+            const xhsTextSub = isDark ? (discourseVars.primaryMedium || '#aaa') : '#666';
             const colsDesktop = cfg.columnCount;
             const cols1400 = Math.min(colsDesktop, 4);
             const cols1100 = Math.min(colsDesktop, 3);
@@ -696,10 +771,10 @@
                 :root {
                     --xhs-c: ${c};
                     --xhs-rgb: ${rgb};
-                    --xhs-bg: ${isDark ? '#1a1a1a' : '#f4f6f8'};
-                    --xhs-card-bg: ${isDark ? '#2d2d2d' : '#fff'};
-                    --xhs-text: ${isDark ? '#eee' : '#333'};
-                    --xhs-text-sub: ${isDark ? '#aaa' : '#666'};
+                    --xhs-bg: ${xhsBg};
+                    --xhs-card-bg: ${xhsCardBg};
+                    --xhs-text: ${xhsText};
+                    --xhs-text-sub: ${xhsTextSub};
                     --xhs-cols: ${colsDesktop};
                     --xhs-pill-scale: ${pillScale};
                 }
@@ -737,12 +812,13 @@
                 .xhs-card {
                     break-inside: avoid; background: var(--xhs-card-bg);
                     border-radius: 12px; margin-bottom: 0;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+                    box-shadow: ${isDark ? '0 6px 22px rgba(0,0,0,0.40)' : '0 2px 8px rgba(0,0,0,0.04)'};
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'};
                     overflow: hidden; position: relative;
                     transition: transform 0.2s, box-shadow 0.2s;
                     display: flex; flex-direction: column;
                 }
-                .xhs-card:hover { transform: translateY(-4px); box-shadow: 0 8px 20px rgba(0,0,0,0.1); z-index: 2; }
+                .xhs-card:hover { transform: translateY(-4px); box-shadow: ${isDark ? '0 10px 30px rgba(0,0,0,0.55)' : '0 8px 20px rgba(0,0,0,0.10)'}; z-index: 2; }
                 .xhs-card.xhs-refresh-highlight {
                     box-shadow: 0 0 0 3px rgba(var(--xhs-rgb), 0.30), 0 14px 34px rgba(0,0,0,0.12) !important;
                 }
@@ -3352,6 +3428,17 @@
                         <div class="xhs-section ${cfg.panelCollapsed?.theme ? 'xhs-collapsed' : ''}" data-section="theme">
                             <div class="xhs-section-title" data-section-title="theme">主题</div>
                             <div class="xhs-section-body">
+                            <div class="xhs-row">
+                                <div>
+                                    <div>深色模式</div>
+                                    <div class="xhs-desc">自动：跟随水源主题；也可强制深色/浅色</div>
+                                </div>
+                                <select class="xhs-input" data-select="darkMode">
+                                    <option value="auto" ${cfg.darkMode === 'auto' ? 'selected' : ''}>自动</option>
+                                    <option value="dark" ${cfg.darkMode === 'dark' ? 'selected' : ''}>强制深色</option>
+                                    <option value="light" ${cfg.darkMode === 'light' ? 'selected' : ''}>强制浅色</option>
+                                </select>
+                            </div>
                             <div class="xhs-colors">
                                 ${Object.entries(Config.themes).map(([k,v]) => `
                                     <div class="xhs-color-item ${cfg.themeColor===v?'active':''}" 

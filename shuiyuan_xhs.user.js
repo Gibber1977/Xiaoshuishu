@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.10
+// @version      1.1.11
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -59,7 +59,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.10';
+    const VERSION = '1.1.11';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -134,6 +134,7 @@
             enabled: true,
             themeColor: '#C8102E', // 交大红
             showStats: true,
+            statsAlign: 'left', // 统计对齐：left/right/justify（主要用于宽松型布局的 xhs-stats）
             showStatLastActivity: true,
             showStatReplies: true,
             showStatLikes: true,
@@ -173,6 +174,7 @@
                 // 基本校验/归一化（避免脏数据导致样式/逻辑异常）
                 cfg.columnCount = Math.min(8, Math.max(2, parseInt(cfg.columnCount, 10) || this.defaults.columnCount));
                 cfg.metaLayout = (cfg.metaLayout === 'spacious' || cfg.metaLayout === 'compact') ? cfg.metaLayout : this.defaults.metaLayout;
+                cfg.statsAlign = (cfg.statsAlign === 'left' || cfg.statsAlign === 'right' || cfg.statsAlign === 'justify') ? cfg.statsAlign : this.defaults.statsAlign;
                 cfg.authorDisplay = (cfg.authorDisplay === 'full' || cfg.authorDisplay === 'avatar' || cfg.authorDisplay === 'name') ? cfg.authorDisplay : this.defaults.authorDisplay;
                 cfg.pillScale = (() => {
                     const n = parseFloat(cfg.pillScale);
@@ -251,6 +253,12 @@
             if (n >= 10000) return (n/10000).toFixed(1) + 'w';
             if (n >= 1000) return (n/1000).toFixed(1) + 'k';
             return n;
+        },
+        formatStatCount(n) {
+            n = parseInt(n) || 0;
+            if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'm';
+            if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+            return String(n);
         },
         parseCount(val) {
             if (val === null || val === undefined) return 0;
@@ -1068,7 +1076,9 @@
                 .xhs-stat-item { display: flex; align-items: center; gap: 2px; }
                 body[data-xhs-meta-layout=\"spacious\"] .xhs-meta { flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; row-gap: 6px; }
                 body[data-xhs-meta-layout=\"spacious\"][data-xhs-stat-last-activity=\"1\"] .xhs-last-activity { display: inline-flex; }
-                body[data-xhs-meta-layout=\"spacious\"] .xhs-stats { flex-basis: 100%; justify-content: flex-start; }
+                body[data-xhs-meta-layout=\"spacious\"] .xhs-stats { flex-basis: 100%; justify-content: flex-start; width: 100%; }
+                body[data-xhs-meta-layout=\"spacious\"][data-xhs-stats-align=\"right\"] .xhs-stats { justify-content: flex-end; }
+                body[data-xhs-meta-layout=\"spacious\"][data-xhs-stats-align=\"justify\"] .xhs-stats { justify-content: space-between; }
                 body[data-xhs-show-stats="0"] .xhs-stats,
                 body[data-xhs-show-stats="0"] .xhs-last-activity { display: none !important; }
                 body[data-xhs-stat-likes="0"] .xhs-likes { display: none !important; }
@@ -1699,8 +1709,8 @@
             this.cache.set(tid, merged);
 
             const likeEl = el.querySelector('.xhs-like-count');
-            if (likeEl) likeEl.textContent = String(merged.likes ?? 0);
-
+            if (likeEl) likeEl.textContent = Utils.formatStatCount(merged.likes ?? 0);
+            
             // 作者信息（移动端列表常见：DOM 里拿不到头像/用户名，这里用 list.json 补齐）
             try {
                 if (meta.author) this.applyAuthorMetaToCard(el, meta.author);
@@ -2360,6 +2370,8 @@
             }
             const replyNum = Utils.parseCount(replies);
             const viewNum = Utils.parseCount(views);
+            const repliesDisplay = Utils.formatStatCount(replyNum);
+            const viewsDisplay = Utils.formatStatCount(viewNum);
 
             const card = document.createElement('div');
             card.className = 'xhs-card';
@@ -2466,8 +2478,8 @@
                         <span class="xhs-last-activity" ${safeLastActivityTitle ? `title="${safeLastActivityTitle}"` : ''}>${safeLastActivity}</span>
                         <div class="xhs-stats">
                             <span class="xhs-stat-item xhs-likes">❤️ <span class="xhs-like-count">-</span></span>
-                            <a class="xhs-replies xhs-replies-link" href="/t/topic/${Utils.escapeHtml(tid)}/1" aria-label="${Utils.escapeHtml(replies)} 条回复，跳转到第一个帖子">💬 ${replies}</a>
-                            <span class="xhs-views">👁️ ${views}</span>
+                            <a class="xhs-replies xhs-replies-link" href="/t/topic/${Utils.escapeHtml(tid)}/1" aria-label="${Utils.escapeHtml(String(replyNum))} 条回复，跳转到第一个帖子">💬 ${Utils.escapeHtml(repliesDisplay)}</a>
+                            <span class="xhs-views">👁️ ${Utils.escapeHtml(viewsDisplay)}</span>
                         </div>
                     </div>
                 </div>
@@ -2962,6 +2974,7 @@
             document.body.dataset.xhsMetaLayout = cfg.metaLayout || 'compact';
             document.body.dataset.xhsAuthorDisplay = cfg.authorDisplay || 'full';
             document.body.dataset.xhsStickerEnabled = cfg.stickerEnabled ? '1' : '0';
+            document.body.dataset.xhsStatsAlign = cfg.statsAlign || 'left';
             document.body.dataset.xhsStatLastActivity = (cfg.showStats && cfg.showStatLastActivity) ? '1' : '0';
             document.body.dataset.xhsStatLikes = (cfg.showStats && cfg.showStatLikes) ? '1' : '0';
             document.body.dataset.xhsStatReplies = (cfg.showStats && cfg.showStatReplies) ? '1' : '0';
@@ -3143,6 +3156,17 @@
                                     <div class="xhs-desc">总开关（更细粒度项在下面）</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.showStats?'on':''}" data-key="showStats"></div>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>统计对齐</div>
+                                    <div class="xhs-desc">宽松型布局下：左端/右端/两端对齐</div>
+                                </div>
+                                <select class="xhs-input" data-select="statsAlign">
+                                    <option value="left" ${cfg.statsAlign === 'left' ? 'selected' : ''}>左端对齐</option>
+                                    <option value="right" ${cfg.statsAlign === 'right' ? 'selected' : ''}>右端对齐</option>
+                                    <option value="justify" ${cfg.statsAlign === 'justify' ? 'selected' : ''}>两端对齐</option>
+                                </select>
                             </div>
                             <div class="xhs-row">
                                 <div>

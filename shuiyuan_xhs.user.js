@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.1.27
+// @version      1.1.28
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪，codex
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -62,7 +62,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.1.27';
+    const VERSION = '1.1.28';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -1511,9 +1511,19 @@
                         const img = t.image_url || t.thumbnail_url || null;
                         const likes = typeof t.like_count === 'number' ? t.like_count : 0;
                         const views = typeof t.views === 'number' ? t.views : 0;
-                        const replyCount = typeof t.reply_count === 'number' ? t.reply_count : 0;
                         const postsCount = typeof t.posts_count === 'number' ? t.posts_count : 0;
                         const highestPostNumber = typeof t.highest_post_number === 'number' ? t.highest_post_number : 0;
+                        let replyCount = typeof t.reply_count === 'number' ? t.reply_count : 0;
+                        // 为了保持与列表页展示一致，优先回退到 posts_count/highest_post_number 推断。
+                        try {
+                            const expectedFromPosts = (postsCount > 0) ? Math.max(0, postsCount - 1) : null;
+                            const expectedFromHighest = (highestPostNumber > 0) ? Math.max(0, highestPostNumber - 1) : null;
+                            const expected = (expectedFromPosts !== null) ? expectedFromPosts : expectedFromHighest;
+                            if (expected !== null) {
+                                const cur = Number(replyCount) || 0;
+                                if (Math.abs(expected - cur) > 1) replyCount = expected;
+                            }
+                        } catch {}
                         const unreadPosts = typeof t.unread_posts === 'number' ? t.unread_posts : 0;
                         const newPosts = typeof t.new_posts === 'number' ? t.new_posts : 0;
                         const lastReadPostNumber = typeof t.last_read_post_number === 'number' ? t.last_read_post_number : 0;

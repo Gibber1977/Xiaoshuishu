@@ -1,0 +1,6 @@
+# Local/tool state
+.serena/
+.log/
+
+# Local agent instructions (keep untracked)
+AGENTS.md

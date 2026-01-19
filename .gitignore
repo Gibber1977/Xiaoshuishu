@@ -4,3 +4,6 @@
 
 # Local agent instructions (keep untracked)
 AGENTS.md
+
+# Not part of this repo's tracked scripts
+linux_xhs.user.js

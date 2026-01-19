@@ -147,7 +147,7 @@
             showUnreadPosts: true, // 跟踪/关注话题显示未读数（也可用于覆盖贴纸）
             darkMode: 'auto', // 深色模式：auto(跟随站点/系统)/dark/light
             cardStagger: true, // 错落布局
-            gridCardAspectRatio: 2.0, // 卡片长宽比（宽/高；仅“非错落布局”生效）
+            gridCardAspectRatio: 1.0, // 卡片长宽比（宽/高；仅“非错落布局”生效）
             columnCount: 4, // 列数（桌面端基准）
             metaLayout: 'spacious', // 元信息布局：compact(紧凑单行)/spacious(宽松两行)
             authorDisplay: 'full', // 贴主展示：full/avatar/name
@@ -2120,18 +2120,8 @@
                 ordered.push(card);
             }
 
-            const cfg = Config.get();
-            if (!cfg.cardStagger) {
-                // grid-mode：直接按顺序重新 append
-                this.container.textContent = '';
-                for (const card of ordered) this.container.appendChild(card);
-                return;
-            }
-
-            const desired = this.getDesiredColumnCount();
-            this.rebuildColumnsWithCards(ordered, desired);
-
-            if (opts?.highlightTids && opts.highlightTids.length) {
+            const highlight = () => {
+                if (!opts?.highlightTids || !opts.highlightTids.length) return;
                 const set = new Set(opts.highlightTids.map((t) => String(t)));
                 requestAnimationFrame(() => {
                     try {
@@ -2141,7 +2131,20 @@
                         }
                     } catch {}
                 });
+            };
+
+            const cfg = Config.get();
+            if (!cfg.cardStagger) {
+                // grid-mode：直接按顺序重新 append
+                this.container.textContent = '';
+                for (const card of ordered) this.container.appendChild(card);
+                highlight();
+                return;
             }
+
+            const desired = this.getDesiredColumnCount();
+            this.rebuildColumnsWithCards(ordered, desired);
+            highlight();
         },
 
         resetObserver() {

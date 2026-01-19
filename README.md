@@ -29,3 +29,7 @@
 > #上海交通大学 #水源社区 #小红书皮肤 #宝藏脚本 #SJTU #生产力工具
 
 > 在线安装链接：[小水书](https://greasyfork.org/zh-CN/scripts/561704-%E5%B0%8F%E6%B0%B4%E4%B9%A6)
+
+---
+
+License: MIT

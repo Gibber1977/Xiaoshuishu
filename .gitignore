@@ -7,3 +7,6 @@ AGENTS.md
 
 # Not part of this repo's tracked scripts
 linux_xhs.user.js
+
+# Local build/export artifacts
+*.user.zip

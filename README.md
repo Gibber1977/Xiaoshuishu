@@ -1,6 +1,4 @@
-因社区的sop，不方便呈现效果预览。
-
-具体效果见 [原帖](https://shuiyuan.sjtu.edu.cn/t/topic/445654)
+基于水源社区协议，具体效果见 [原帖](https://shuiyuan.sjtu.edu.cn/t/topic/445654)，本处不做过多展示。
 
 ---
 

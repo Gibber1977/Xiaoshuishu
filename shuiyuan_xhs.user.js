@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小水书
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3.0
 // @description  瀑布流排版，自动提取帖子正文图片作为封面，内置设置面板
 // @author       十一世纪，codex
 // @match        https://shuiyuan.sjtu.edu.cn/*
@@ -62,7 +62,7 @@
     if (window.__xhsShuiyuanLoaded) return;
     window.__xhsShuiyuanLoaded = true;
 
-    const VERSION = '1.2';
+    const VERSION = '1.3.0';
 
     /* ============================================
      * 0. 早期防闪烁逻辑
@@ -163,6 +163,7 @@
             overfetchMode: true, // 过加载模式：扩大预取范围（可能增加请求）
             imgCropEnabled: true, // 智能裁剪封面（仅极端宽/长图才裁剪）
             imgCropBaseRatio: 1.78, // 裁剪基准比例（宽/高）
+            listNoticeSpacingMode: 'smart', // “查看x个新的或更新的话题”提示避让：smart/legacy/off
             rateLimitEnabled: true, // 请求速率限制（降低 429 风险）
             rateMinIntervalMs: 350, // 最小请求间隔（毫秒）
             rateCooldownSeconds: 3, // 遇到 429 的冷却秒数（与 Retry-After 取较大值）
@@ -176,6 +177,7 @@
             settingsIconGradientBottom: '#0066CC',
             settingsIconGridColor: '#B5B5B5', // grid 样式 SVG 配色（使用 currentColor）
             settingsIconGearColor: '#BDBDBD', // “设置齿轮”SVG 配色（使用 fill 直写颜色）
+            hiddenCoverTopics: {}, // 按帖子隐藏主楼图：{ [tid]: title }
             panelCollapsed: { layout: false, stats: false, cache: false, images: false, advanced: true, theme: false } // 设置面板折叠状态
         },
         themes: {
@@ -185,6 +187,20 @@
             '清新绿': '#52c41a',
             '神秘紫': '#722ed1',
             '少女粉': '#eb2f96'
+        },
+        normalizeHiddenCoverTopics(raw) {
+            const out = {};
+            if (!raw || typeof raw !== 'object') return out;
+            let count = 0;
+            for (const [key, value] of Object.entries(raw)) {
+                if (count >= 1000) break;
+                const tid = String(key || '').trim();
+                if (!/^\d{1,18}$/u.test(tid)) continue;
+                const title = String(value || '').trim().slice(0, 120);
+                out[tid] = title;
+                count += 1;
+            }
+            return out;
         },
         get() {
             try {
@@ -235,6 +251,7 @@
                 cfg.settingsIconGradientBottom = isHex(cfg.settingsIconGradientBottom) ? String(cfg.settingsIconGradientBottom).trim() : this.defaults.settingsIconGradientBottom;
                 cfg.settingsIconGridColor = isHex(cfg.settingsIconGridColor) ? String(cfg.settingsIconGridColor).trim() : this.defaults.settingsIconGridColor;
                 cfg.settingsIconGearColor = isHex(cfg.settingsIconGearColor) ? String(cfg.settingsIconGearColor).trim() : this.defaults.settingsIconGearColor;
+                cfg.hiddenCoverTopics = this.normalizeHiddenCoverTopics(cfg.hiddenCoverTopics);
                 cfg.cacheTtlMinutes = Math.min(14 * 24 * 60, Math.max(1, parseInt(cfg.cacheTtlMinutes, 10) || this.defaults.cacheTtlMinutes));
                 cfg.cacheMaxEntries = Math.min(5000, Math.max(50, parseInt(cfg.cacheMaxEntries, 10) || this.defaults.cacheMaxEntries));
                 cfg.cacheEnabled = Boolean(cfg.cacheEnabled);
@@ -254,6 +271,10 @@
                     if (!Number.isFinite(n)) return this.defaults.imgCropBaseRatio;
                     return Math.min(3.0, Math.max(0.6, n));
                 })();
+                cfg.listNoticeSpacingMode =
+                    (cfg.listNoticeSpacingMode === 'smart' || cfg.listNoticeSpacingMode === 'legacy' || cfg.listNoticeSpacingMode === 'off')
+                        ? cfg.listNoticeSpacingMode
+                        : this.defaults.listNoticeSpacingMode;
                 cfg.rateLimitEnabled = (typeof cfg.rateLimitEnabled === 'boolean') ? cfg.rateLimitEnabled : this.defaults.rateLimitEnabled;
                 cfg.rateMinIntervalMs = Math.min(5000, Math.max(120, parseInt(cfg.rateMinIntervalMs, 10) || this.defaults.rateMinIntervalMs));
                 cfg.rateCooldownSeconds = Math.min(60, Math.max(1, parseInt(cfg.rateCooldownSeconds, 10) || this.defaults.rateCooldownSeconds));
@@ -287,6 +308,36 @@
             const pc = cfg.panelCollapsed && typeof cfg.panelCollapsed === 'object' ? cfg.panelCollapsed : {};
             pc[id] = Boolean(collapsed);
             cfg.panelCollapsed = pc;
+            GM_setValue(this.KEY, JSON.stringify(cfg));
+        },
+        isCoverHidden(tid) {
+            const key = String(tid || '').trim();
+            if (!key) return false;
+            const map = this.get().hiddenCoverTopics || {};
+            return Object.prototype.hasOwnProperty.call(map, key);
+        },
+        setCoverHidden(tid, title) {
+            const key = String(tid || '').trim();
+            if (!key) return;
+            const cfg = this.get();
+            const map = this.normalizeHiddenCoverTopics(cfg.hiddenCoverTopics);
+            const nextTitle = String(title || map[key] || `话题 ${key}`).trim().slice(0, 120);
+            map[key] = nextTitle;
+            cfg.hiddenCoverTopics = map;
+            GM_setValue(this.KEY, JSON.stringify(cfg));
+        },
+        unsetCoverHidden(tid) {
+            const key = String(tid || '').trim();
+            if (!key) return;
+            const cfg = this.get();
+            const map = this.normalizeHiddenCoverTopics(cfg.hiddenCoverTopics);
+            delete map[key];
+            cfg.hiddenCoverTopics = map;
+            GM_setValue(this.KEY, JSON.stringify(cfg));
+        },
+        clearCoverHidden() {
+            const cfg = this.get();
+            cfg.hiddenCoverTopics = {};
             GM_setValue(this.KEY, JSON.stringify(cfg));
         },
         reset() {
@@ -572,6 +623,18 @@
             const path = window.location.pathname;
             return path.startsWith('/t/');
         },
+        isPrivateMessageTopic() {
+            if (!this.isTopicPath()) return false;
+            try {
+                const body = document.body;
+                if (body?.classList?.contains('archetype-private_message')) return true;
+                if (body?.classList?.contains('private-message-page')) return true;
+            } catch {}
+            try {
+                if (document.querySelector('.topic-map__private-message-label, .private-message-glyph, .private-message')) return true;
+            } catch {}
+            return false;
+        },
         seededRandom(seed) {
             // 简单的字符串哈希转随机数
             let h = 0;
@@ -772,6 +835,56 @@
                     border-color: rgba(var(--xhs-rgb), 0.45);
                     color: var(--xhs-c);
                 }
+                .xhs-hidden-cover-list {
+                    margin-top: 8px;
+                    border: 1px solid rgba(0,0,0,0.08);
+                    border-radius: 12px;
+                    max-height: 180px;
+                    overflow: auto;
+                    background: rgba(255,255,255,0.82);
+                }
+                body.xhs-dark .xhs-hidden-cover-list {
+                    border: 1px solid rgba(255,255,255,0.12);
+                    background: rgba(0,0,0,0.22);
+                }
+                .xhs-hidden-cover-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    padding: 8px 10px;
+                    font-size: 12px;
+                    color: #444;
+                    transition: background 0.15s ease;
+                }
+                .xhs-hidden-cover-item:hover { background: rgba(var(--xhs-rgb), 0.06); }
+                body.xhs-dark .xhs-hidden-cover-item { color: rgba(255,255,255,0.88); }
+                body.xhs-dark .xhs-hidden-cover-item:hover { background: rgba(255,255,255,0.06); }
+                .xhs-hidden-cover-item + .xhs-hidden-cover-item {
+                    border-top: 1px solid rgba(0,0,0,0.06);
+                }
+                body.xhs-dark .xhs-hidden-cover-item + .xhs-hidden-cover-item {
+                    border-top: 1px solid rgba(255,255,255,0.08);
+                }
+                .xhs-hidden-cover-title {
+                    flex: 1 1 auto;
+                    min-width: 0;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    color: inherit;
+                    text-decoration: none;
+                }
+                .xhs-hidden-cover-title:hover { color: var(--xhs-c); text-decoration: underline; }
+                .xhs-hidden-cover-tid {
+                    opacity: 0.65;
+                    font-size: 11px;
+                    margin-left: 4px;
+                }
+                .xhs-btn.xhs-mini-btn {
+                    padding: 4px 8px;
+                    border-radius: 8px;
+                    font-size: 12px;
+                }
                 .xhs-row .xhs-input {
                     width: 88px;
                     padding: 6px 8px;
@@ -884,6 +997,10 @@
                     padding: 16px 0;
                     max-width: 1400px;
                     margin: 0 auto;
+                    transition: margin-top 0.20s ease;
+                }
+                body.xhs-on.xhs-active.xhs-has-list-notice .xhs-grid {
+                    margin-top: var(--xhs-list-notice-offset, 42px);
                 }
                 .xhs-grid .xhs-col {
                     flex: 1 1 0;
@@ -936,6 +1053,36 @@
                     width: 100%; position: relative;
                     background: ${isDark ? '#333' : '#eee'};
                     min-height: 120px; /* 最小高度 */
+                }
+                .xhs-cover-toggle {
+                    border: 1px solid rgba(0,0,0,0.08);
+                    border-radius: 999px;
+                    height: 24px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    background: rgba(0,0,0,0.04);
+                    color: var(--xhs-text-sub);
+                    font-size: 11px;
+                    padding: 0 8px;
+                    line-height: 1;
+                    white-space: nowrap;
+                    transition: all 0.16s ease;
+                }
+                body.xhs-dark .xhs-cover-toggle {
+                    background: rgba(255,255,255,0.08);
+                    color: rgba(255,255,255,0.88);
+                    border: 1px solid rgba(255,255,255,0.14);
+                }
+                .xhs-cover-toggle:hover {
+                    border-color: rgba(var(--xhs-rgb), 0.35);
+                    color: var(--xhs-c);
+                    background: rgba(var(--xhs-rgb), 0.10);
+                }
+                .xhs-cover-toggle.is-hidden {
+                    background: rgba(var(--xhs-rgb), 0.22);
+                    color: var(--xhs-c);
                 }
                 .xhs-real-img {
                     width: 100%; height: auto; display: block; object-fit: cover;
@@ -1230,6 +1377,11 @@
                     text-decoration: none;
                 }
                 .xhs-title:hover { color: var(--xhs-c); }
+                .xhs-card-actions {
+                    display: flex;
+                    justify-content: flex-end;
+                    margin-top: 8px;
+                }
                 
                 .xhs-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--xhs-text-sub); min-width: 0; }
                 .xhs-user { display: flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; min-width: 0; flex: 1 1 auto; }
@@ -1342,12 +1494,28 @@
 
                 /* 有图封面：加轻微渐变提升可读性 */
                 .xhs-cover.has-img { background: transparent; }
+                .xhs-cover.has-img .xhs-text-cover { display: none; }
                 .xhs-cover.has-img::after {
                     content: '';
                     position: absolute;
                     inset: 0;
                     pointer-events: none;
                     background: linear-gradient(180deg, rgba(0,0,0,0.00) 52%, rgba(0,0,0,0.22) 100%);
+                }
+                .xhs-card.xhs-cover-hidden .xhs-cover img.xhs-real-img { display: none !important; }
+                .xhs-card.xhs-cover-hidden .xhs-cover .xhs-text-cover { display: flex !important; }
+                .xhs-card.xhs-cover-hidden .xhs-cover::after { display: none !important; }
+                .xhs-card.xhs-cover-hidden .xhs-cover {
+                    aspect-ratio: auto !important;
+                    height: auto !important;
+                }
+                .xhs-card.xhs-cover-hidden .xhs-cover.xhs-img-crop {
+                    aspect-ratio: auto !important;
+                    height: auto !important;
+                }
+                .xhs-grid.grid-mode .xhs-card.xhs-cover-hidden .xhs-cover .xhs-text-cover {
+                    height: auto;
+                    min-height: 168px;
                 }
 
                 /* grid-mode（非错落布局）：固定封面比例，减少“行高由最长卡片决定”造成的大段留空 */
@@ -1852,6 +2020,109 @@
             }, 1800);
         },
 
+        syncListNoticeSpacing() {
+            try {
+                const body = document.body;
+                if (!body || !Utils.isListLikePath() || !body.classList.contains('xhs-on')) {
+                    body?.classList?.remove?.('xhs-has-list-notice');
+                    document.documentElement?.style?.removeProperty?.('--xhs-list-notice-offset');
+                    return;
+                }
+                const mode = Config.get().listNoticeSpacingMode || 'smart';
+                if (mode === 'off') {
+                    body.classList.remove('xhs-has-list-notice');
+                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                    return;
+                }
+                const notice = document.querySelector('.show-more.has-topics .alert, .show-more.has-topics a.alert, .show-more.has-topics button.alert');
+                const grid = this.container || document.querySelector('.xhs-grid');
+                if (!notice) {
+                    body.classList.remove('xhs-has-list-notice');
+                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                    return;
+                }
+                if (!grid) {
+                    body.classList.remove('xhs-has-list-notice');
+                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                    return;
+                }
+                const rect = notice.getBoundingClientRect();
+                const gridRect = grid.getBoundingClientRect();
+                const visible = (rect.width > 20 && rect.height > 8);
+                if (!visible) {
+                    body.classList.remove('xhs-has-list-notice');
+                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                    return;
+                }
+                let offset = 0;
+                if (mode === 'legacy') {
+                    offset = Math.min(120, Math.max(28, Math.ceil(rect.height + 10)));
+                } else {
+                    const desiredGap = 8;
+                    const overlapNeed = Math.ceil(rect.bottom - gridRect.top + desiredGap);
+                    // smart：按“当前实际重叠”即时计算，避免叠加历史偏移造成过大间隙
+                    offset = Math.min(72, Math.max(0, overlapNeed));
+                    if (offset <= 0) {
+                        body.classList.remove('xhs-has-list-notice');
+                        document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                        return;
+                    }
+                }
+                document.documentElement.style.setProperty('--xhs-list-notice-offset', `${offset}px`);
+                body.classList.add('xhs-has-list-notice');
+            } catch {}
+        },
+
+        applyCoverPreferenceToCard(card) {
+            const el = card?.nodeType === 1 ? card : null;
+            if (!el) return;
+            const tid = String(el.getAttribute('data-tid') || el.dataset?.tid || '');
+            if (!tid) return;
+            const hidden = Config.isCoverHidden(tid);
+            const cover = el.querySelector('.xhs-cover');
+            if (cover) {
+                if (hidden) {
+                    cover.querySelectorAll('img.xhs-real-img').forEach((img) => img.remove());
+                    cover.classList.remove('has-img', 'xhs-img-crop', 'xhs-img-tall', 'xhs-img-wide');
+                    cover.style.removeProperty('--xhs-img-pos');
+                    cover.style.removeProperty('--xhs-crop-ar');
+                    cover.style.removeProperty('height');
+                } else {
+                    const hasRealImg = Boolean(cover.querySelector('img.xhs-real-img'));
+                    if (!hasRealImg) {
+                        const cached = this.cache.get(tid);
+                        if (cached?.img) {
+                            const img = document.createElement('img');
+                            img.src = cached.img;
+                            img.className = 'xhs-real-img';
+                            img.onload = () => {
+                                img.classList.add('loaded');
+                                try { this.applyImageCropForCover(cover, img); } catch {}
+                            };
+                            cover.prepend(img);
+                        }
+                    }
+                    const nowHasImg = Boolean(cover.querySelector('img.xhs-real-img'));
+                    cover.classList.toggle('has-img', nowHasImg);
+                }
+            }
+            el.classList.toggle('xhs-cover-hidden', hidden);
+            const btn = el.querySelector('.xhs-cover-toggle[data-action="toggle-cover"]');
+            if (btn) {
+                btn.classList.toggle('is-hidden', hidden);
+                btn.textContent = hidden ? '🙈 仅文字封面' : '🖼️ 主楼图封面';
+                btn.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+                btn.setAttribute('title', hidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面');
+            }
+        },
+
+        applyCoverPreferenceToAllCards(tid) {
+            const key = String(tid || '').trim();
+            if (!key) return;
+            const selector = `.xhs-card[data-tid="${CSS.escape(key)}"]`;
+            document.querySelectorAll(selector).forEach((card) => this.applyCoverPreferenceToCard(card));
+        },
+
         _getPersistentData(tid) {
             const cfg = Config.get();
             if (!cfg.cacheEnabled) return null;
@@ -1992,7 +2263,8 @@
 
             if (merged.img) {
                 const cover = el.querySelector('.xhs-cover');
-                if (cover && !cover.querySelector('img.xhs-real-img')) {
+                const coverHidden = Config.isCoverHidden(tid);
+                if (cover && !coverHidden && !cover.querySelector('img.xhs-real-img')) {
                     const img = document.createElement('img');
                     img.src = merged.img;
                     img.className = 'xhs-real-img';
@@ -2000,15 +2272,20 @@
                         img.classList.add('loaded');
                         try { this.applyImageCropForCover(cover, img); } catch {}
                     };
-                    cover.querySelector('.xhs-text-cover')?.remove();
+                    cover.querySelector('img.xhs-real-img')?.remove();
                     cover.prepend(img);
-                    cover.classList.add('has-img');
+                }
+                if (cover) {
+                    const hasRealImg = Boolean(cover.querySelector('img.xhs-real-img'));
+                    cover.classList.toggle('has-img', hasRealImg);
                 }
             } else if (opts?.fromList) {
                 // 列表未提供 image_url，保持需要进一步按需抓取 cooked 的状态
                 // 如果 noImg 未验证（origin 不是 topic），也允许继续抓取一次验证
                 if (!noImg || origin !== 'topic') this.cache.set(tid, { ...merged, needsImage: true });
             }
+
+            this.applyCoverPreferenceToCard(el);
 
             // 列表 JSON 的结果也写入跨页面缓存（避免下次进来还要 per-topic 请求）
             try {
@@ -2226,9 +2503,10 @@
                 try {
                     const cfg = Config.get();
                     if (!cfg.enabled) return;
-                    if (!cfg.cardStagger) return;
                     if (!document.body.classList.contains('xhs-on')) return;
                     if (!Utils.isListLikePath()) return;
+                    this.syncListNoticeSpacing();
+                    if (!cfg.cardStagger) return;
                     if (!this.container) return;
                     // iOS Safari 会在滚动时因地址栏/工具栏显隐频繁触发 resize（宽度不变，高度变化），
                     // 若强制重建分列会导致卡片不断“洗牌”。这里只在列数确实需要变化时才重建。
@@ -2512,22 +2790,25 @@
             // 如果有图，替换封面
             if (merged.img) {
                 const cover = el.querySelector('.xhs-cover');
-                const img = document.createElement('img');
-                img.src = merged.img;
-                img.className = 'xhs-real-img';
-                img.onload = () => {
-                    img.classList.add('loaded');
-                    try { this.applyImageCropForCover(cover, img); } catch {}
-                };
-                
-                // 仅替换文字封面，保留标签/置顶/外链标识等元素
-                cover.querySelector('.xhs-text-cover')?.remove();
-                cover.querySelector('img.xhs-real-img')?.remove();
-                cover.prepend(img);
-                
-                // 标记为有图模式（可用于调整布局）
-                cover.classList.add('has-img');
+                const coverHidden = Config.isCoverHidden(tid);
+                if (cover && !coverHidden) {
+                    const img = document.createElement('img');
+                    img.src = merged.img;
+                    img.className = 'xhs-real-img';
+                    img.onload = () => {
+                        img.classList.add('loaded');
+                        try { this.applyImageCropForCover(cover, img); } catch {}
+                    };
+
+                    cover.querySelector('img.xhs-real-img')?.remove();
+                    cover.prepend(img);
+                }
+                if (cover) {
+                    const hasRealImg = Boolean(cover.querySelector('img.xhs-real-img'));
+                    cover.classList.toggle('has-img', hasRealImg);
+                }
             }
+            this.applyCoverPreferenceToCard(el);
         },
 
         render() {
@@ -2648,6 +2929,8 @@
                     } catch {}
                 });
             }
+
+            this.syncListNoticeSpacing();
         },
 
         createCard(row) {
@@ -2723,6 +3006,7 @@
             card.dataset.categoryName = category || '';
             card.dataset.userHref = userHref || '';
             card.dataset.userName = userCard || user || '';
+            card.dataset.title = title || '';
             card.dataset.unreadPosts = String(unreadNum || 0);
             card.dataset.unreadHref = String(unreadHref || '');
             if (cfg.showUnreadPosts && unreadNum > 0) card.classList.add('xhs-has-unread');
@@ -2768,6 +3052,7 @@
             }
             const coverRand = Utils.seededRandom(tid + '_cover2');
             const useDropcap = coverRand() < 0.42 && !emoji;
+            const coverHidden = Config.isCoverHidden(tid);
 
             const coverHtml = `
                 <div class="xhs-cover">
@@ -2822,6 +3107,9 @@
                             <span class="xhs-views">👁️ ${Utils.escapeHtml(viewsDisplay)}</span>
                         </div>
                     </div>
+                    <div class="xhs-card-actions">
+                        <button type="button" class="xhs-cover-toggle${coverHidden ? ' is-hidden' : ''}" data-action="toggle-cover" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverHidden ? 'true' : 'false'}" title="${coverHidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面'}">${coverHidden ? '🙈 仅文字封面' : '🖼️ 主楼图封面'}</button>
+                    </div>
                 </div>
             `;
 
@@ -2872,6 +3160,34 @@
                     Utils.navigateTo(href);
                 }, true);
             }
+
+            const coverToggle = card.querySelector('.xhs-cover-toggle[data-action="toggle-cover"]');
+            if (coverToggle) {
+                coverToggle.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    const key = String(tid || '').trim();
+                    if (!key) return;
+                    const nowHidden = Config.isCoverHidden(key);
+                    if (nowHidden) Config.unsetCoverHidden(key);
+                    else Config.setCoverHidden(key, card.dataset.title || title || `话题 ${key}`);
+                    const nextHidden = !nowHidden;
+                    const selector = `.xhs-card[data-tid="${CSS.escape(key)}"]`;
+                    document.querySelectorAll(selector).forEach((cardItem) => {
+                        this.applyCoverPreferenceToCard(cardItem);
+                        if (!nextHidden) {
+                            const cached = this.cache.get(key);
+                            if (!cached || cached.needsImage) {
+                                this.queue.push({ el: cardItem, tid: key });
+                                this.processQueue();
+                            }
+                        }
+                    });
+                }, true);
+            }
+
+            this.applyCoverPreferenceToCard(card);
             return card;
         },
 
@@ -3341,11 +3657,14 @@
             document.addEventListener('click', (e) => {
                 try {
                     if (!Config.get().enabled) return;
-                    const btn = e.target?.closest?.('button');
+                    const btn = e.target?.closest?.('button, a');
                     const text = (btn?.textContent || '').trim();
                     if (!btn || !text) return;
                     if (text.includes('查看') && text.includes('新的') && text.includes('更新') && text.includes('话题')) {
                         Grid.forceReorderOnNextRender = true;
+                        setTimeout(() => {
+                            try { Grid.syncListNoticeSpacing(); } catch {}
+                        }, 0);
                     }
                 } catch {}
             }, true);
@@ -3392,7 +3711,10 @@
                     if (!cfg.enabled) return;
                     if (!Utils.isListLikePath()) return;
                     if (Utils.getTopicRows().length === 0) return;
-                    if (document.body.classList.contains('xhs-on')) return;
+                    if (document.body.classList.contains('xhs-on')) {
+                        try { Grid.syncListNoticeSpacing(); } catch {}
+                        return;
+                    }
                     fireRouteChanged();
                 } catch {}
             }, 5000);
@@ -3502,6 +3824,8 @@
 
             document.body.classList.remove('xhs-on');
             document.body.classList.remove('xhs-active');
+            document.body.classList.remove('xhs-has-list-notice');
+            document.documentElement.style.removeProperty('--xhs-list-notice-offset');
             this.pendingRenderRetryCount = 0;
             clearTimeout(this.pendingRenderRetryTimer);
             this.pendingRenderRetryTimer = null;
@@ -3524,8 +3848,9 @@
         applyTopicEnhance() {
             const cfg = Config.get();
             const ok = Boolean(cfg.enabled && Utils.isTopicPath());
+            const isPrivateMessage = Utils.isPrivateMessageTopic();
             document.body.classList.remove('xhs-topic-reading');
-            document.body.classList.toggle('xhs-topic-cards', ok && Boolean(cfg.topicReplyCards));
+            document.body.classList.toggle('xhs-topic-cards', ok && Boolean(cfg.topicReplyCards) && !isPrivateMessage);
         },
 
         startHeaderObserver() {
@@ -3615,10 +3940,13 @@
                         Grid.container.classList.toggle('grid-mode', !cfg.cardStagger);
                     }
                     this.tryRenderListPage();
+                    try { Grid.syncListNoticeSpacing(); } catch {}
                 }
             } else {
                 document.body.classList.remove('xhs-on');
                 document.body.classList.remove('xhs-active');
+                document.body.classList.remove('xhs-has-list-notice');
+                document.documentElement.style.removeProperty('--xhs-list-notice-offset');
                 Styles.removeTheme();
                 document.querySelector('.xhs-grid')?.remove();
                 Grid.container = null;
@@ -3637,6 +3965,7 @@
                         const meta = Grid.listTopicMeta.get(tid) || { unreadPosts: Utils.parseCount(card.dataset?.unreadPosts) || 0 };
                         Grid.applyUnreadMetaToCard(card, meta);
                         Grid.updateStickerForCard(card, likes);
+                        Grid.applyCoverPreferenceToCard(card);
                     });
                 }
             } catch {}
@@ -3799,6 +4128,10 @@
                     try { return panel.querySelector('.xhs-panel-body')?.scrollTop || 0; } catch { return 0; }
                 })();
                 const cfg = Config.get();
+                const hiddenCoverEntries = Object.entries(cfg.hiddenCoverTopics || {})
+                    .map(([tid, t]) => [String(tid), String(t || '').trim()])
+                    .filter(([tid]) => /^\d{1,18}$/u.test(tid))
+                    .sort((a, b) => Number(b[0]) - Number(a[0]));
                 const showXhsText = cfg.settingsIconStyle === 'xhsText';
                 const showGrid = cfg.settingsIconStyle === 'grid';
                 const showShuiyuan = cfg.settingsIconStyle === 'shuiyuan';
@@ -3890,7 +4223,7 @@
                             <div class="xhs-row">
                                 <div>
                                     <div>帖子页回复卡片化</div>
-                                    <div class="xhs-desc">把每层回复包装成更“卡片”的层级（仅 /t/... 生效）</div>
+                                    <div class="xhs-desc">把每层回复包装成更“卡片”的层级（仅 /t/... 生效；私信页自动关闭）</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.topicReplyCards?'on':''}" data-key="topicReplyCards"></div>
                             </div>
@@ -4034,6 +4367,35 @@
                                 </div>
                                 <input class="xhs-input" type="number" min="0.6" max="3.0" step="0.05" value="${cfg.imgCropBaseRatio}" data-input="imgCropBaseRatio" />
                             </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>新帖提示避让</div>
+                                    <div class="xhs-desc">用于“查看 x 个新的或更新的话题”与卡片的间距处理</div>
+                                </div>
+                                <select class="xhs-input" data-select="listNoticeSpacingMode" style="width: 136px;">
+                                    <option value="smart" ${cfg.listNoticeSpacingMode === 'smart' ? 'selected' : ''}>智能（推荐）</option>
+                                    <option value="legacy" ${cfg.listNoticeSpacingMode === 'legacy' ? 'selected' : ''}>经典（旧版）</option>
+                                    <option value="off" ${cfg.listNoticeSpacingMode === 'off' ? 'selected' : ''}>关闭避让</option>
+                                </select>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>按帖隐藏主楼图</div>
+                                    <div class="xhs-desc">可在卡片底部点“主楼图封面/仅文字封面”切换；当前 ${hiddenCoverEntries.length} 条</div>
+                                </div>
+                                <button class="xhs-btn danger" type="button" data-action="clearHiddenCovers" ${hiddenCoverEntries.length ? '' : 'disabled'}>清空</button>
+                            </div>
+                            ${hiddenCoverEntries.length ? `
+                                <div class="xhs-hidden-cover-list">
+                                    ${hiddenCoverEntries.map(([tid, t]) => `
+                                        <div class="xhs-hidden-cover-item" data-hidden-tid="${Utils.escapeHtml(tid)}">
+                                            <a class="xhs-hidden-cover-title" href="/t/topic/${Utils.escapeHtml(tid)}" data-action="openHiddenCoverTopic" data-tid="${Utils.escapeHtml(tid)}" title="打开话题：${Utils.escapeHtml(t || `话题 ${tid}`)}">${Utils.escapeHtml(t || `话题 ${tid}`)}</a>
+                                            <span class="xhs-hidden-cover-tid">#${Utils.escapeHtml(tid)}</span>
+                                            <button class="xhs-btn xhs-mini-btn" type="button" data-action="restoreHiddenCover" data-tid="${Utils.escapeHtml(tid)}">恢复</button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            ` : `<div class="xhs-desc">暂无“仅文字封面”的帖子</div>`}
                             </div>
                         </div>
 
@@ -4301,6 +4663,44 @@
                     try { Grid.persistentCache = null; } catch {}
                     try { Grid.cache?.clear?.(); } catch {}
                     try { location.reload(); } catch {}
+                });
+                panel.querySelectorAll('[data-action="restoreHiddenCover"][data-tid]').forEach((btn) => {
+                    btn.addEventListener('click', () => {
+                        const tid = String(btn.getAttribute('data-tid') || '').trim();
+                        if (!tid) return;
+                        Config.unsetCoverHidden(tid);
+                        Grid.applyCoverPreferenceToAllCards(tid);
+                        document.querySelectorAll(`.xhs-card[data-tid="${CSS.escape(tid)}"]`).forEach((card) => {
+                            const cached = Grid.cache.get(tid);
+                            const cover = card.querySelector('.xhs-cover');
+                            const hasImg = Boolean(cover?.querySelector?.('img.xhs-real-img'));
+                            if (!hasImg && (!cached || cached.needsImage)) Grid.queue.push({ el: card, tid });
+                        });
+                        Grid.processQueue();
+                        render();
+                        App.applyConfig();
+                    });
+                });
+                panel.querySelector('[data-action="clearHiddenCovers"]')?.addEventListener('click', () => {
+                    const count = Object.keys(Config.get().hiddenCoverTopics || {}).length;
+                    if (!count) return;
+                    if (!confirm(`清空 ${count} 条“仅文字封面”设置？`)) return;
+                    Config.clearCoverHidden();
+                    document.querySelectorAll('.xhs-card[data-tid]').forEach((card) => {
+                        const tid = String(card.getAttribute('data-tid') || '');
+                        Grid.applyCoverPreferenceToCard(card);
+                        const cached = Grid.cache.get(tid);
+                        const cover = card.querySelector('.xhs-cover');
+                        const hasImg = Boolean(cover?.querySelector?.('img.xhs-real-img'));
+                        if (tid && (!cached || cached.needsImage)) {
+                            Grid.queue.push({ el: card, tid });
+                        } else if (!hasImg) {
+                            Grid.applyCoverPreferenceToCard(card);
+                        }
+                    });
+                    Grid.processQueue();
+                    render();
+                    App.applyConfig();
                 });
                 panel.querySelector('.xhs-reset').onclick = () => {
                     if (confirm('重置所有设置？')) {

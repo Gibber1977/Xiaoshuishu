@@ -997,10 +997,10 @@
                     padding: 16px 0;
                     max-width: 1400px;
                     margin: 0 auto;
-                    transition: margin-top 0.20s ease;
+                    transition: padding-top 0.20s ease;
                 }
                 body.xhs-on.xhs-active.xhs-has-list-notice .xhs-grid {
-                    margin-top: var(--xhs-list-notice-offset, 42px);
+                    padding-top: calc(16px + var(--xhs-list-notice-offset, 0px));
                 }
                 .xhs-grid .xhs-col {
                     flex: 1 1 0;
@@ -1055,34 +1055,63 @@
                     min-height: 120px; /* 最小高度 */
                 }
                 .xhs-cover-toggle {
-                    border: 1px solid rgba(0,0,0,0.08);
+                    position: absolute;
+                    left: 10px;
+                    bottom: 10px;
+                    z-index: 4;
+                    border: 1px solid rgba(0,0,0,0.10);
                     border-radius: 999px;
                     height: 24px;
+                    width: 24px;
                     display: inline-flex;
                     align-items: center;
                     justify-content: center;
                     cursor: pointer;
-                    background: rgba(0,0,0,0.04);
-                    color: var(--xhs-text-sub);
-                    font-size: 11px;
-                    padding: 0 8px;
+                    user-select: none;
+                    background: rgba(255,255,255,0.78);
+                    color: rgba(0,0,0,0.72);
+                    font-size: 13px;
+                    font-weight: 700;
+                    padding: 0;
                     line-height: 1;
-                    white-space: nowrap;
-                    transition: all 0.16s ease;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.16);
+                    backdrop-filter: blur(6px);
+                    -webkit-backdrop-filter: blur(6px);
+                    opacity: 0;
+                    transform: translateY(6px);
+                    pointer-events: none;
+                    transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+                }
+                .xhs-card:hover .xhs-cover-toggle,
+                .xhs-card:focus-within .xhs-cover-toggle {
+                    opacity: 1;
+                    transform: translateY(0);
+                    pointer-events: auto;
                 }
                 body.xhs-dark .xhs-cover-toggle {
-                    background: rgba(255,255,255,0.08);
+                    background: rgba(18,20,24,0.62);
                     color: rgba(255,255,255,0.88);
-                    border: 1px solid rgba(255,255,255,0.14);
+                    border: 1px solid rgba(255,255,255,0.18);
                 }
                 .xhs-cover-toggle:hover {
-                    border-color: rgba(var(--xhs-rgb), 0.35);
+                    border-color: rgba(var(--xhs-rgb), 0.48);
                     color: var(--xhs-c);
-                    background: rgba(var(--xhs-rgb), 0.10);
+                    background: rgba(255,255,255,0.92);
+                }
+                body.xhs-dark .xhs-cover-toggle:hover {
+                    background: rgba(30,33,39,0.82);
                 }
                 .xhs-cover-toggle.is-hidden {
                     background: rgba(var(--xhs-rgb), 0.22);
                     color: var(--xhs-c);
+                    border-color: rgba(var(--xhs-rgb), 0.40);
+                }
+                @media (hover: none), (pointer: coarse) {
+                    .xhs-cover-toggle {
+                        opacity: 1;
+                        transform: translateY(0);
+                        pointer-events: auto;
+                    }
                 }
                 .xhs-real-img {
                     width: 100%; height: auto; display: block; object-fit: cover;
@@ -1377,11 +1406,6 @@
                     text-decoration: none;
                 }
                 .xhs-title:hover { color: var(--xhs-c); }
-                .xhs-card-actions {
-                    display: flex;
-                    justify-content: flex-end;
-                    margin-top: 8px;
-                }
                 
                 .xhs-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--xhs-text-sub); min-width: 0; }
                 .xhs-user { display: flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; min-width: 0; flex: 1 1 auto; }
@@ -1637,6 +1661,8 @@
         columns: [],
         currentColumnCount: 0,
         forceReorderOnNextRender: false,
+        coverRevalidateMs: 8 * 60 * 60 * 1000, // 主楼图懒校验周期（仅可见卡片触发）
+        coverRevalidatedInSession: new Set(),
 
         getListJsonUrl() {
             const path = window.location.pathname;
@@ -1650,6 +1676,72 @@
             if (path.startsWith('/tag/')) return `${path}.json${search}`;
             if (path.startsWith('/c/')) return `${path}.json${search}`;
             return null;
+        },
+
+        normalizeImageUrl(url) {
+            const raw = String(url || '').trim();
+            if (!raw) return '';
+            try { return new URL(raw, window.location.origin).href; } catch { return raw; }
+        },
+
+        toPositiveInt(value) {
+            const n = parseInt(value, 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+        },
+
+        toPositiveNumber(value) {
+            const n = Number(value);
+            return Number.isFinite(n) && n > 0 ? n : null;
+        },
+
+        extractImageShape(data) {
+            const d = data || {};
+            const imgW = this.toPositiveInt(d.imgW ?? d.image_width ?? d.imageWidth);
+            const imgH = this.toPositiveInt(d.imgH ?? d.image_height ?? d.imageHeight);
+            let imgAR = this.toPositiveNumber(d.imgAR ?? d.image_ratio ?? d.imageRatio);
+            if (!imgAR && imgW && imgH) imgAR = imgW / imgH;
+            return {
+                imgW: imgW || null,
+                imgH: imgH || null,
+                imgAR: imgAR || null
+            };
+        },
+
+        applyImageShapeToImg(img, data) {
+            if (!img) return;
+            const shape = this.extractImageShape(data);
+            if (shape.imgW && shape.imgH) {
+                img.setAttribute('width', String(shape.imgW));
+                img.setAttribute('height', String(shape.imgH));
+            } else {
+                img.removeAttribute('width');
+                img.removeAttribute('height');
+            }
+            if (shape.imgAR && !(shape.imgW && shape.imgH)) {
+                img.style.setProperty('aspect-ratio', String(shape.imgAR));
+            } else {
+                img.style.removeProperty('aspect-ratio');
+            }
+        },
+
+        shouldForceRefreshCover(tid, cached) {
+            const key = String(tid || '').trim();
+            if (!key) return false;
+            if (!cached || !cached.img) return false;
+            if (cached.needsImage) return true;
+            if (cached.origin !== 'topic') return false;
+            if (this.coverRevalidatedInSession.has(key)) return false;
+
+            const cfg = Config.get();
+            if (!cfg.cacheEnabled) return false;
+            this.loadPersistentCache();
+            const entry = this.persistentCache?.get?.(key);
+            const ts = typeof entry?.ts === 'number' ? entry.ts : 0;
+            if (!ts) return false;
+            if ((Date.now() - ts) < this.coverRevalidateMs) return false;
+
+            this.coverRevalidatedInSession.add(key);
+            return true;
         },
 
         ensureListMetaLoaded() {
@@ -1706,6 +1798,11 @@
                         const tid = String(t.id);
                         if (!tid) continue;
                         const img = t.image_url || t.thumbnail_url || null;
+                        const shape = this.extractImageShape({
+                            imgW: t.image_width ?? t.imageWidth,
+                            imgH: t.image_height ?? t.imageHeight,
+                            imgAR: t.image_ratio ?? t.imageRatio
+                        });
                         const likes = typeof t.like_count === 'number' ? t.like_count : 0;
                         const views = typeof t.views === 'number' ? t.views : 0;
                         const postsCount = typeof t.posts_count === 'number' ? t.posts_count : 0;
@@ -1729,6 +1826,9 @@
                         const author = pickAuthor(t);
                         this.listTopicMeta.set(tid, {
                             img,
+                            imgW: shape.imgW,
+                            imgH: shape.imgH,
+                            imgAR: shape.imgAR,
                             likes,
                             views,
                             replyCount,
@@ -2023,52 +2123,53 @@
         syncListNoticeSpacing() {
             try {
                 const body = document.body;
-                if (!body || !Utils.isListLikePath() || !body.classList.contains('xhs-on')) {
+                const rootStyle = document.documentElement?.style;
+                const clearSpacing = () => {
                     body?.classList?.remove?.('xhs-has-list-notice');
-                    document.documentElement?.style?.removeProperty?.('--xhs-list-notice-offset');
+                    rootStyle?.removeProperty?.('--xhs-list-notice-offset');
+                };
+                if (!body || !Utils.isListLikePath() || !body.classList.contains('xhs-on')) {
+                    clearSpacing();
                     return;
                 }
                 const mode = Config.get().listNoticeSpacingMode || 'smart';
                 if (mode === 'off') {
-                    body.classList.remove('xhs-has-list-notice');
-                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                    clearSpacing();
                     return;
                 }
                 const notice = document.querySelector('.show-more.has-topics .alert, .show-more.has-topics a.alert, .show-more.has-topics button.alert');
                 const grid = this.container || document.querySelector('.xhs-grid');
-                if (!notice) {
-                    body.classList.remove('xhs-has-list-notice');
-                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
-                    return;
-                }
-                if (!grid) {
-                    body.classList.remove('xhs-has-list-notice');
-                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                if (!notice || !grid) {
+                    clearSpacing();
                     return;
                 }
                 const rect = notice.getBoundingClientRect();
-                const gridRect = grid.getBoundingClientRect();
                 const visible = (rect.width > 20 && rect.height > 8);
                 if (!visible) {
-                    body.classList.remove('xhs-has-list-notice');
-                    document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                    clearSpacing();
                     return;
                 }
+
+                const gridRect = grid.getBoundingClientRect();
+                const gridPaddingTop = parseFloat(getComputedStyle(grid).paddingTop || '0') || 0;
+                const currentOffset = parseFloat(rootStyle?.getPropertyValue?.('--xhs-list-notice-offset') || '0') || 0;
+                const basePaddingTop = Math.max(0, gridPaddingTop - currentOffset);
+                const desiredGap = 8;
+                const contentTop = gridRect.top + basePaddingTop;
+                const overlapNeed = Math.ceil(rect.bottom + desiredGap - contentTop);
+
                 let offset = 0;
                 if (mode === 'legacy') {
-                    offset = Math.min(120, Math.max(28, Math.ceil(rect.height + 10)));
+                    offset = Math.min(72, Math.max(18, Math.ceil(rect.height + 10 - basePaddingTop)));
                 } else {
-                    const desiredGap = 8;
-                    const overlapNeed = Math.ceil(rect.bottom - gridRect.top + desiredGap);
-                    // smart：按“当前实际重叠”即时计算，避免叠加历史偏移造成过大间隙
-                    offset = Math.min(72, Math.max(0, overlapNeed));
+                    // smart：按“提醒底部”与“卡片内容起点”的真实交叠计算，避免出现过大空白
+                    offset = Math.min(56, Math.max(0, overlapNeed));
                     if (offset <= 0) {
-                        body.classList.remove('xhs-has-list-notice');
-                        document.documentElement.style.removeProperty('--xhs-list-notice-offset');
+                        clearSpacing();
                         return;
                     }
                 }
-                document.documentElement.style.setProperty('--xhs-list-notice-offset', `${offset}px`);
+                rootStyle?.setProperty?.('--xhs-list-notice-offset', `${offset}px`);
                 body.classList.add('xhs-has-list-notice');
             } catch {}
         },
@@ -2095,6 +2196,7 @@
                             const img = document.createElement('img');
                             img.src = cached.img;
                             img.className = 'xhs-real-img';
+                            this.applyImageShapeToImg(img, cached);
                             img.onload = () => {
                                 img.classList.add('loaded');
                                 try { this.applyImageCropForCover(cover, img); } catch {}
@@ -2110,9 +2212,10 @@
             const btn = el.querySelector('.xhs-cover-toggle[data-action="toggle-cover"]');
             if (btn) {
                 btn.classList.toggle('is-hidden', hidden);
-                btn.textContent = hidden ? '🙈 仅文字封面' : '🖼️ 主楼图封面';
+                btn.textContent = hidden ? '🙈' : '🖼️';
                 btn.setAttribute('aria-pressed', hidden ? 'true' : 'false');
                 btn.setAttribute('title', hidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面');
+                btn.setAttribute('aria-label', hidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面');
             }
         },
 
@@ -2145,8 +2248,12 @@
             cached.lastAccess = now;
             const data = cached.data || {};
             const origin = (data.origin === 'topic' || data.origin === 'list') ? data.origin : '';
+            const shape = this.extractImageShape(data);
             return {
                 img: data.img ?? null,
+                imgW: shape.imgW,
+                imgH: shape.imgH,
+                imgAR: shape.imgAR,
                 likes: typeof data.likes === 'number' ? data.likes : (parseInt(data.likes, 10) || 0),
                 views: (() => {
                     const v = (typeof data.views === 'number') ? data.views : parseInt(data.views, 10);
@@ -2171,6 +2278,16 @@
             const origin = (data?.origin === 'topic' || data?.origin === 'list') ? data.origin : '';
             const prev = this.persistentCache.get(key);
             const prevData = prev?.data || null;
+            const shape = this.extractImageShape(data);
+            const prevShape = this.extractImageShape(prevData);
+            const nextShape = {
+                imgW: shape.imgW || prevShape.imgW || null,
+                imgH: shape.imgH || prevShape.imgH || null,
+                imgAR: shape.imgAR || prevShape.imgAR || null
+            };
+            if (!nextShape.imgAR && nextShape.imgW && nextShape.imgH) {
+                nextShape.imgAR = nextShape.imgW / nextShape.imgH;
+            }
 
             const next = {
                 img: data?.img || null,
@@ -2193,12 +2310,18 @@
             })();
             if (nextViews !== null) next.views = nextViews;
             if (nextReplyCount !== null) next.replyCount = nextReplyCount;
+            if (nextShape.imgW) next.imgW = nextShape.imgW;
+            if (nextShape.imgH) next.imgH = nextShape.imgH;
+            if (nextShape.imgAR) next.imgAR = nextShape.imgAR;
 
             const same =
                 prevData &&
                 prevData.img === next.img &&
                 (prevData.likes || 0) === (next.likes || 0) &&
                 Boolean(prevData.noImg) === Boolean(next.noImg) &&
+                (this.toPositiveInt(prevData.imgW) || 0) === (this.toPositiveInt(next.imgW) || 0) &&
+                (this.toPositiveInt(prevData.imgH) || 0) === (this.toPositiveInt(next.imgH) || 0) &&
+                Math.abs((this.toPositiveNumber(prevData.imgAR) || 0) - (this.toPositiveNumber(next.imgAR) || 0)) < 0.0001 &&
                 String(prevData.origin || '') === String(next.origin || '');
             // 不同才更新时间戳；相同仅 touch lastAccess，减少写入
             const ts = same && typeof prev?.ts === 'number' ? prev.ts : now;
@@ -2211,16 +2334,36 @@
         applyMetaToCard(el, meta, opts) {
             const tid = String(el.dataset.tid || el.getAttribute('data-tid') || '');
             if (!tid) return;
-            const existing = this.cache.get(tid) || { img: null, likes: 0, needsImage: true };
+            const existing = this.cache.get(tid) || { img: null, likes: 0, needsImage: true, imgW: null, imgH: null, imgAR: null };
             const noImg = Boolean(meta?.noImg);
             const origin = (meta?.origin === 'topic' || meta?.origin === 'list') ? meta.origin : '';
+            let mergedOrigin = origin || existing.origin || '';
+            if (origin === 'list' && existing.origin === 'topic') {
+                const listImg = this.normalizeImageUrl(meta?.img || '');
+                const cachedImg = this.normalizeImageUrl(existing?.img || '');
+                // 若列表图与已验证封面一致（或列表无图），保留 topic 来源，允许后续懒校验。
+                if (!listImg || !cachedImg || listImg === cachedImg) mergedOrigin = 'topic';
+            }
+            const nextShape = this.extractImageShape(meta);
+            const prevShape = this.extractImageShape(existing);
+            const mergedShape = {
+                imgW: nextShape.imgW || prevShape.imgW || null,
+                imgH: nextShape.imgH || prevShape.imgH || null,
+                imgAR: nextShape.imgAR || prevShape.imgAR || null
+            };
+            if (!mergedShape.imgAR && mergedShape.imgW && mergedShape.imgH) {
+                mergedShape.imgAR = mergedShape.imgW / mergedShape.imgH;
+            }
             const merged = {
                 img: meta.img ?? existing.img ?? null,
+                imgW: mergedShape.imgW,
+                imgH: mergedShape.imgH,
+                imgAR: mergedShape.imgAR,
                 likes: (typeof meta.likes === 'number' ? meta.likes : existing.likes) || 0,
                 // noImg 只有在“已被 topic.json 验证”时才强制阻止后续请求；否则允许再验证一次，避免老缓存误判
                 needsImage: (noImg && origin === 'topic') ? false : Boolean(existing.needsImage),
                 noImg,
-                origin
+                origin: mergedOrigin
             };
             if (merged.img) merged.needsImage = false;
             this.cache.set(tid, merged);
@@ -2264,16 +2407,25 @@
             if (merged.img) {
                 const cover = el.querySelector('.xhs-cover');
                 const coverHidden = Config.isCoverHidden(tid);
-                if (cover && !coverHidden && !cover.querySelector('img.xhs-real-img')) {
-                    const img = document.createElement('img');
-                    img.src = merged.img;
-                    img.className = 'xhs-real-img';
-                    img.onload = () => {
-                        img.classList.add('loaded');
-                        try { this.applyImageCropForCover(cover, img); } catch {}
-                    };
-                    cover.querySelector('img.xhs-real-img')?.remove();
-                    cover.prepend(img);
+                if (cover && !coverHidden) {
+                    const existingImg = cover.querySelector('img.xhs-real-img');
+                    const expectedSrc = this.normalizeImageUrl(merged.img);
+                    const existingSrc = this.normalizeImageUrl(existingImg?.getAttribute?.('src') || existingImg?.src || '');
+                    const shouldReplace = !existingImg || expectedSrc !== existingSrc;
+                    if (shouldReplace) {
+                        const img = document.createElement('img');
+                        img.src = merged.img;
+                        img.className = 'xhs-real-img';
+                        this.applyImageShapeToImg(img, merged);
+                        img.onload = () => {
+                            img.classList.add('loaded');
+                            try { this.applyImageCropForCover(cover, img); } catch {}
+                        };
+                        cover.querySelector('img.xhs-real-img')?.remove();
+                        cover.prepend(img);
+                    } else {
+                        this.applyImageShapeToImg(existingImg, merged);
+                    }
                 }
                 if (cover) {
                     const hasRealImg = Boolean(cover.querySelector('img.xhs-real-img'));
@@ -2291,6 +2443,9 @@
             try {
                 if (opts?.fromList) this._setPersistentData(tid, {
                     img: merged.img || null,
+                    imgW: merged.imgW || null,
+                    imgH: merged.imgH || null,
+                    imgAR: merged.imgAR || null,
                     likes: merged.likes || 0,
                     views: (typeof meta?.views === 'number') ? meta.views : null,
                     replyCount: (typeof meta?.replyCount === 'number') ? meta.replyCount : null,
@@ -2431,8 +2586,9 @@
                     if (e.isIntersecting) {
                         const tid = e.target.dataset.tid;
                         const cached = tid ? this.cache.get(tid) : null;
-                        if (tid && (!cached || cached.needsImage)) {
-                            this.queue.push({ el: e.target, tid });
+                        const forceRefresh = tid ? this.shouldForceRefreshCover(tid, cached) : false;
+                        if (tid && (!cached || cached.needsImage || forceRefresh)) {
+                            this.queue.push({ el: e.target, tid, forceRefresh });
                             this.processQueue();
                         }
                         this.observer.unobserve(e.target);
@@ -2593,15 +2749,23 @@
             if (this.processing || !this.queue.length) return;
             this.processing = true;
 
-            const { el, tid } = this.queue.shift();
+            const task = this.queue.shift();
+            const { el, tid, forceRefresh = false } = task || {};
+            if (!el || !tid) {
+                this.processing = false;
+                this.processQueue();
+                return;
+            }
             
             try {
-                const data = await this.fetchTopic(tid);
+                const data = await this.fetchTopic(tid, { forceRefresh });
                 this.updateCard(el, data);
             } catch (e) {
                 // 失败（如429），增加冷却并放回队列
                 if (e.status === 429) {
-                    this.queue.unshift({ el, tid }); // 放回队头
+                    this.queue.unshift(task); // 放回队头
+                } else if (forceRefresh) {
+                    this.coverRevalidatedInSession.delete(String(tid || ''));
                 }
                 console.warn('[XHS] Fetch error:', e);
             }
@@ -2613,9 +2777,10 @@
             }, 0);
         },
 
-        async fetchTopic(tid) {
+        async fetchTopic(tid, opts) {
+            const forceRefresh = Boolean(opts?.forceRefresh);
             const cfg = Config.get();
-            if (cfg.cacheEnabled) {
+            if (cfg.cacheEnabled && !forceRefresh) {
                 const cachedData = this._getPersistentData(String(tid));
                 // 仅当“确实拿到封面图”或“已被 topic.json 验证无图”时才命中缓存；
                 // list.json 的 img=null/noImg=false 只代表“列表没给图”，不能阻止后续抓取 cooked。
@@ -2687,6 +2852,7 @@
                     const src = normalizeUrl(rawSrc);
                     const width = getDim(img, 'width');
                     const height = getDim(img, 'height');
+                    const ratio = (width && height) ? (width / height) : null;
                     const inOnebox = Boolean(img.closest?.('.onebox'));
                     const className = String(img.getAttribute('class') || '').toLowerCase();
                     let score = 10;
@@ -2707,13 +2873,17 @@
                     if (className.includes('thumbnail') || className.includes('onebox')) score += 20;
                     if (inOnebox) score -= 10; // onebox 更可能先出现小图；稍微降权但不一刀切
 
-                    return { src, score };
+                    return { src, score, imgW: width || null, imgH: height || null, imgAR: ratio || null };
                 }) 
                 .filter((x) => x.score > 0)
                 .sort((a, b) => b.score - a.score);
+            const best = imgs[0] || null;
             
             return {
-                img: imgs.length > 0 ? imgs[0].src : null,
+                img: best?.src || null,
+                imgW: best?.imgW || null,
+                imgH: best?.imgH || null,
+                imgAR: best?.imgAR || null,
                 likes: json.like_count || 0,
                 views: (typeof json.views === 'number') ? json.views : null,
                 replyCount: (() => {
@@ -2739,11 +2909,24 @@
 
         updateCard(el, data) {
             const tid = String(el.dataset.tid);
-            const existing = this.cache.get(tid) || { img: null, likes: 0, needsImage: true };
+            const existing = this.cache.get(tid) || { img: null, likes: 0, needsImage: true, imgW: null, imgH: null, imgAR: null };
             const noImg = Boolean(data?.noImg);
             const origin = (data?.origin === 'topic' || data?.origin === 'list') ? data.origin : '';
+            const nextShape = this.extractImageShape(data);
+            const prevShape = this.extractImageShape(existing);
+            const mergedShape = {
+                imgW: nextShape.imgW || prevShape.imgW || null,
+                imgH: nextShape.imgH || prevShape.imgH || null,
+                imgAR: nextShape.imgAR || prevShape.imgAR || null
+            };
+            if (!mergedShape.imgAR && mergedShape.imgW && mergedShape.imgH) {
+                mergedShape.imgAR = mergedShape.imgW / mergedShape.imgH;
+            }
             const merged = {
                 img: data.img ?? existing.img ?? null,
+                imgW: mergedShape.imgW,
+                imgH: mergedShape.imgH,
+                imgAR: mergedShape.imgAR,
                 likes: (typeof data.likes === 'number' ? data.likes : existing.likes) ?? 0,
                 needsImage: noImg ? false : !Boolean(data.img),
                 noImg,
@@ -2755,6 +2938,9 @@
             try {
                 this._setPersistentData(tid, {
                     img: merged.img || null,
+                    imgW: merged.imgW || null,
+                    imgH: merged.imgH || null,
+                    imgAR: merged.imgAR || null,
                     likes: merged.likes || 0,
                     views: (typeof data?.views === 'number') ? data.views : null,
                     replyCount: (typeof data?.replyCount === 'number') ? data.replyCount : null,
@@ -2795,6 +2981,7 @@
                     const img = document.createElement('img');
                     img.src = merged.img;
                     img.className = 'xhs-real-img';
+                    this.applyImageShapeToImg(img, merged);
                     img.onload = () => {
                         img.classList.add('loaded');
                         try { this.applyImageCropForCover(cover, img); } catch {}
@@ -3071,6 +3258,7 @@
                     ${pinned ? `<span class="xhs-pin">📌</span>` : ''}
                     ${featuredDomain ? `<span class="xhs-link-badge">🔗 ${Utils.escapeHtml(featuredDomain)}</span>` : ''}
                     ${stickerText ? `<span class="xhs-sticker${stickerIsUnread ? ' xhs-sticker-unread' : ''}">${Utils.escapeHtml(stickerText)}</span>` : ''}
+                    <span class="xhs-cover-toggle${coverHidden ? ' is-hidden' : ''}" role="button" tabindex="0" data-action="toggle-cover" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverHidden ? 'true' : 'false'}" aria-label="${coverHidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面'}" title="${coverHidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面'}">${coverHidden ? '🙈' : '🖼️'}</span>
                 </div>
             `;
 
@@ -3106,9 +3294,6 @@
                             <a class="xhs-replies xhs-replies-link" href="/t/topic/${Utils.escapeHtml(tid)}/1" aria-label="${Utils.escapeHtml(String(replyNum))} 条回复，跳转到第一个帖子">💬 ${Utils.escapeHtml(repliesDisplay)}</a>
                             <span class="xhs-views">👁️ ${Utils.escapeHtml(viewsDisplay)}</span>
                         </div>
-                    </div>
-                    <div class="xhs-card-actions">
-                        <button type="button" class="xhs-cover-toggle${coverHidden ? ' is-hidden' : ''}" data-action="toggle-cover" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverHidden ? 'true' : 'false'}" title="${coverHidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面'}">${coverHidden ? '🙈 仅文字封面' : '🖼️ 主楼图封面'}</button>
                     </div>
                 </div>
             `;
@@ -3163,7 +3348,7 @@
 
             const coverToggle = card.querySelector('.xhs-cover-toggle[data-action="toggle-cover"]');
             if (coverToggle) {
-                coverToggle.addEventListener('click', (e) => {
+                const handleCoverToggle = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     e.stopImmediatePropagation();
@@ -3184,6 +3369,11 @@
                             }
                         }
                     });
+                };
+                coverToggle.addEventListener('click', handleCoverToggle, true);
+                coverToggle.addEventListener('keydown', (e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+                    handleCoverToggle(e);
                 }, true);
             }
 
@@ -3834,6 +4024,7 @@
             this.headerBtnRetryTimer = null;
             clearTimeout(this.headerObserverTimer);
             this.headerObserverTimer = null;
+            try { Grid.coverRevalidatedInSession?.clear?.(); } catch {}
             if (!Utils.isListLikePath()) this.restoredForKey = '';
 
             if (Config.get().enabled) {
@@ -4381,7 +4572,7 @@
                             <div class="xhs-row">
                                 <div>
                                     <div>按帖隐藏主楼图</div>
-                                    <div class="xhs-desc">可在卡片底部点“主楼图封面/仅文字封面”切换；当前 ${hiddenCoverEntries.length} 条</div>
+                                    <div class="xhs-desc">可在卡片封面左下角悬浮按钮切换“主楼图/仅文字封面”；当前 ${hiddenCoverEntries.length} 条</div>
                                 </div>
                                 <button class="xhs-btn danger" type="button" data-action="clearHiddenCovers" ${hiddenCoverEntries.length ? '' : 'disabled'}>清空</button>
                             </div>
@@ -4662,6 +4853,7 @@
                     try { GM_setValue('xhs_topic_cache_v1', '{}'); } catch {}   
                     try { Grid.persistentCache = null; } catch {}
                     try { Grid.cache?.clear?.(); } catch {}
+                    try { Grid.coverRevalidatedInSession?.clear?.(); } catch {}
                     try { location.reload(); } catch {}
                 });
                 panel.querySelectorAll('[data-action="restoreHiddenCover"][data-tid]').forEach((btn) => {

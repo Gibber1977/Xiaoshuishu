@@ -157,6 +157,11 @@
             topicReplyCardsBodyPaddingLeft: 14, // 帖子页回复卡片化：正文区域左侧留白（px）
             topicScrollKeepPosition: true, // 帖子页向上加载更多时保持当前位置（减少跳楼）
             coverPillsEnabled: true, // 封面左上角分类/标签 pill
+            keywordHighlightEnabled: true, // 关键词突出显示
+            keywordHighlightStyle: 'random', // random/hl/ul/wave/dot/bd
+            keywordHighlightLexicon: '闵行\n徐汇\n电院\n机动\n船建\n安泰\n保研\n考研\n选课\nGPA\n思源\n东川路\n二手\n求购\n拼车\n合租\n猫\n狗',
+            textCoverStyle: 'classic', // 文字封面风格：classic/notebook/glass/collage/mix_custom
+            textCoverMixPool: ['classic', 'notebook', 'glass'], // 自定义混合池（仅 mix_custom 生效）
             cacheEnabled: true, // 跨页面缓存
             cacheTtlMinutes: 20160, // 缓存有效期（分钟）- 14天
             cacheMaxEntries: 300, // 缓存条目上限
@@ -178,6 +183,7 @@
             settingsIconGridColor: '#B5B5B5', // grid 样式 SVG 配色（使用 currentColor）
             settingsIconGearColor: '#BDBDBD', // “设置齿轮”SVG 配色（使用 fill 直写颜色）
             hiddenCoverTopics: {}, // 按帖子隐藏主楼图：{ [tid]: title }
+            hiddenCoverTopicStyles: {}, // 按帖子覆盖文字封面风格：{ [tid]: classic/notebook/glass/collage }
             panelCollapsed: { layout: false, stats: false, cache: false, images: false, advanced: true, theme: false } // 设置面板折叠状态
         },
         themes: {
@@ -201,6 +207,63 @@
                 count += 1;
             }
             return out;
+        },
+        normalizeHiddenCoverTopicStyles(raw) {
+            const out = {};
+            if (!raw || typeof raw !== 'object') return out;
+            const allowed = new Set(['classic', 'notebook', 'glass', 'collage']);
+            let count = 0;
+            for (const [key, value] of Object.entries(raw)) {
+                if (count >= 1000) break;
+                const tid = String(key || '').trim();
+                if (!/^\d{1,18}$/u.test(tid)) continue;
+                const style = String(value || '').trim();
+                if (!allowed.has(style)) continue;
+                out[tid] = style;
+                count += 1;
+            }
+            return out;
+        },
+        normalizeKeywordHighlightStyle(raw) {
+            const style = String(raw || '').trim();
+            if (style === 'glow') return 'hl'; // 兼容旧配置
+            const allowed = new Set(['random', 'hl', 'ul', 'wave', 'dot', 'bd']);
+            return allowed.has(style) ? style : this.defaults.keywordHighlightStyle;
+        },
+        normalizeKeywordHighlightLexicon(raw) {
+            const source = Array.isArray(raw) ? raw.join('\n') : String(raw ?? '');
+            const lines = source.replace(/\r\n?/g, '\n').split('\n');
+            const out = [];
+            const seen = new Set();
+            for (const line of lines) {
+                const pieces = String(line || '').split(/[，,;；]/u);
+                for (const item of pieces) {
+                    const keyword = String(item || '').trim().slice(0, 32);
+                    if (!keyword || seen.has(keyword)) continue;
+                    seen.add(keyword);
+                    out.push(keyword);
+                    if (out.length >= 200) return out;
+                }
+            }
+            return out;
+        },
+        normalizeTextCoverMixPool(raw) {
+            const allowed = ['classic', 'notebook', 'glass', 'collage'];
+            const arr = Array.isArray(raw)
+                ? raw
+                : (typeof raw === 'string'
+                    ? raw.split(',')
+                    : ((raw && typeof raw === 'object')
+                        ? Object.keys(raw).filter((k) => raw[k])
+                        : []));
+            const set = new Set();
+            for (const item of arr) {
+                const style = String(item || '').trim();
+                if (!allowed.includes(style) || set.has(style)) continue;
+                set.add(style);
+            }
+            const out = allowed.filter((style) => set.has(style));
+            return out.length ? out : [...this.defaults.textCoverMixPool];
         },
         get() {
             try {
@@ -252,6 +315,10 @@
                 cfg.settingsIconGridColor = isHex(cfg.settingsIconGridColor) ? String(cfg.settingsIconGridColor).trim() : this.defaults.settingsIconGridColor;
                 cfg.settingsIconGearColor = isHex(cfg.settingsIconGearColor) ? String(cfg.settingsIconGearColor).trim() : this.defaults.settingsIconGearColor;
                 cfg.hiddenCoverTopics = this.normalizeHiddenCoverTopics(cfg.hiddenCoverTopics);
+                cfg.hiddenCoverTopicStyles = this.normalizeHiddenCoverTopicStyles(cfg.hiddenCoverTopicStyles);
+                cfg.keywordHighlightEnabled = (typeof cfg.keywordHighlightEnabled === 'boolean') ? cfg.keywordHighlightEnabled : this.defaults.keywordHighlightEnabled;
+                cfg.keywordHighlightStyle = this.normalizeKeywordHighlightStyle(cfg.keywordHighlightStyle);
+                cfg.keywordHighlightLexicon = this.normalizeKeywordHighlightLexicon(cfg.keywordHighlightLexicon).join('\n');
                 cfg.cacheTtlMinutes = Math.min(14 * 24 * 60, Math.max(1, parseInt(cfg.cacheTtlMinutes, 10) || this.defaults.cacheTtlMinutes));
                 cfg.cacheMaxEntries = Math.min(5000, Math.max(50, parseInt(cfg.cacheMaxEntries, 10) || this.defaults.cacheMaxEntries));
                 cfg.cacheEnabled = Boolean(cfg.cacheEnabled);
@@ -266,6 +333,32 @@
                 cfg.cardStagger = Boolean(cfg.cardStagger);
                 cfg.overfetchMode = Boolean(cfg.overfetchMode);
                 cfg.imgCropEnabled = Boolean(cfg.imgCropEnabled);
+                const legacyStyle = String(cfg.textCoverStyle || '').trim();
+                if (legacyStyle === 'vivid' || legacyStyle === 'editor' || legacyStyle === 'minimal') {
+                    cfg.textCoverStyle = 'classic'; // 兼容旧版本风格值
+                } else if (legacyStyle === 'mix_np' || legacyStyle === 'mix_all') {
+                    cfg.textCoverStyle = 'mix_custom';
+                } else if (legacyStyle === 'structured' || legacyStyle === 'poster' || legacyStyle === 'magazine' || legacyStyle === 'aura') {
+                    cfg.textCoverStyle = 'classic';
+                } else {
+                    cfg.textCoverStyle = legacyStyle;
+                }
+                cfg.textCoverStyle =
+                    (
+                        cfg.textCoverStyle === 'classic' ||
+                        cfg.textCoverStyle === 'notebook' ||
+                        cfg.textCoverStyle === 'glass' ||
+                        cfg.textCoverStyle === 'collage' ||
+                        cfg.textCoverStyle === 'mix_custom'
+                    )
+                        ? cfg.textCoverStyle
+                        : this.defaults.textCoverStyle;
+                if (legacyStyle === 'mix_np' && !Array.isArray(cfg.textCoverMixPool)) {
+                    cfg.textCoverMixPool = ['notebook', 'glass'];
+                } else if (legacyStyle === 'mix_all' && !Array.isArray(cfg.textCoverMixPool)) {
+                    cfg.textCoverMixPool = [...this.defaults.textCoverMixPool];
+                }
+                cfg.textCoverMixPool = this.normalizeTextCoverMixPool(cfg.textCoverMixPool);
                 cfg.imgCropBaseRatio = (() => {
                     const n = parseFloat(cfg.imgCropBaseRatio);
                     if (!Number.isFinite(n)) return this.defaults.imgCropBaseRatio;
@@ -338,6 +431,34 @@
         clearCoverHidden() {
             const cfg = this.get();
             cfg.hiddenCoverTopics = {};
+            cfg.hiddenCoverTopicStyles = {};
+            GM_setValue(this.KEY, JSON.stringify(cfg));
+        },
+        getCoverStyleOverride(tid) {
+            const key = String(tid || '').trim();
+            if (!key) return '';
+            const map = this.get().hiddenCoverTopicStyles || {};
+            const style = String(map[key] || '').trim();
+            return (style === 'classic' || style === 'notebook' || style === 'glass' || style === 'collage') ? style : '';
+        },
+        setCoverStyleOverride(tid, style) {
+            const key = String(tid || '').trim();
+            const nextStyle = String(style || '').trim();
+            if (!key) return;
+            if (!(nextStyle === 'classic' || nextStyle === 'notebook' || nextStyle === 'glass' || nextStyle === 'collage')) return;
+            const cfg = this.get();
+            const map = this.normalizeHiddenCoverTopicStyles(cfg.hiddenCoverTopicStyles);
+            map[key] = nextStyle;
+            cfg.hiddenCoverTopicStyles = map;
+            GM_setValue(this.KEY, JSON.stringify(cfg));
+        },
+        unsetCoverStyleOverride(tid) {
+            const key = String(tid || '').trim();
+            if (!key) return;
+            const cfg = this.get();
+            const map = this.normalizeHiddenCoverTopicStyles(cfg.hiddenCoverTopicStyles);
+            delete map[key];
+            cfg.hiddenCoverTopicStyles = map;
             GM_setValue(this.KEY, JSON.stringify(cfg));
         },
         reset() {
@@ -519,6 +640,9 @@
             const div = document.createElement('div');
             div.textContent = str;
             return div.innerHTML;
+        },
+        escapeRegExp(str) {
+            return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         },
         navigateTo(pathOrUrl) {
             const url = pathOrUrl?.toString?.() || '';
@@ -893,10 +1017,160 @@
                     background: rgba(255,255,255,0.95);
                     color: #333;
                 }
+                .xhs-row .xhs-input.xhs-textarea {
+                    width: 100%;
+                    min-height: 96px;
+                    resize: vertical;
+                    line-height: 1.45;
+                    font-size: 12px;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                }
                 body.xhs-dark .xhs-row .xhs-input {
                     border: 1px solid rgba(255,255,255,0.16);
                     background: rgba(0,0,0,0.25);
                     color: rgba(255,255,255,0.9);
+                }
+                .xhs-inline-actions {
+                    margin-top: 8px;
+                    display: flex;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                }
+                .xhs-style-preview-grid {
+                    display: grid;
+                    grid-template-columns: repeat(5, minmax(0, 1fr));
+                    gap: 8px;
+                    width: 100%;
+                    margin-top: 8px;
+                }
+                .xhs-style-preview-item {
+                    appearance: none;
+                    -webkit-appearance: none;
+                    position: relative;
+                    border: 1px solid rgba(0,0,0,0.10);
+                    border-radius: 10px;
+                    height: 48px;
+                    background: #f6f7fb;
+                    cursor: pointer;
+                    overflow: hidden;
+                    padding: 4px 6px;
+                    color: #333;
+                    display: flex;
+                    align-items: flex-end;
+                    justify-content: space-between;
+                    font-size: 10px;
+                    font-weight: 700;
+                    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+                }
+                .xhs-style-preview-item:hover {
+                    transform: translateY(-1px);
+                    border-color: rgba(var(--xhs-rgb), 0.45);
+                    box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+                }
+                .xhs-style-preview-item.active {
+                    border-color: rgba(var(--xhs-rgb), 0.78);
+                    box-shadow: 0 0 0 2px rgba(var(--xhs-rgb), 0.18);
+                }
+                body.xhs-dark .xhs-style-preview-item {
+                    border: 1px solid rgba(255,255,255,0.14);
+                    background: rgba(255,255,255,0.04);
+                    color: rgba(255,255,255,0.92);
+                }
+                body.xhs-dark .xhs-style-preview-item.active {
+                    border-color: rgba(var(--xhs-rgb), 0.92);
+                    box-shadow: 0 0 0 2px rgba(var(--xhs-rgb), 0.28);
+                }
+                .xhs-style-preview-item::before {
+                    content: '';
+                    position: absolute;
+                    inset: 0;
+                    pointer-events: none;
+                }
+                .xhs-style-preview-item[data-style="classic"]::before {
+                    background:
+                        linear-gradient(145deg, rgba(var(--xhs-rgb), 0.16), rgba(0,0,0,0)),
+                        linear-gradient(180deg, rgba(255,255,255,0.58), rgba(0,0,0,0)),
+                        #f8f9ff;
+                }
+                .xhs-style-preview-item[data-style="notebook"]::before {
+                    background:
+                        linear-gradient(rgba(130,142,160,0.22) 1px, transparent 1px),
+                        linear-gradient(90deg, rgba(130,142,160,0.18) 1px, transparent 1px),
+                        #f7f9fc;
+                    background-size: 10px 10px, 10px 10px, 100% 100%;
+                }
+                .xhs-style-preview-item[data-style="glass"]::before {
+                    background:
+                        linear-gradient(160deg, rgba(255,255,255,0.72), rgba(255,255,255,0.08) 56%),
+                        radial-gradient(circle at 18% 16%, rgba(var(--xhs-rgb), 0.16), rgba(0,0,0,0) 46%),
+                        #e9f0fa;
+                }
+                .xhs-style-preview-item[data-style="collage"]::before {
+                    background:
+                        radial-gradient(rgba(0,0,0,0.30) 1px, transparent 1px),
+                        linear-gradient(165deg, #ffe55b, #ffd800);
+                    background-size: 8px 8px, 100% 100%;
+                }
+                .xhs-style-preview-item[data-style="mix_custom"]::before {
+                    background: conic-gradient(from 90deg, #f8f9ff, #f7f9fc, #e9f0fa, #ffe55b, #f8f9ff);
+                }
+                .xhs-style-preview-item .xhs-style-preview-label,
+                .xhs-style-preview-item .xhs-style-preview-sub {
+                    position: relative;
+                    z-index: 1;
+                    text-shadow: 0 1px 1px rgba(255,255,255,0.45);
+                    white-space: nowrap;
+                }
+                .xhs-style-preview-item .xhs-style-preview-sub {
+                    font-size: 9px;
+                    opacity: 0.68;
+                }
+                body.xhs-dark .xhs-style-preview-item .xhs-style-preview-label,
+                body.xhs-dark .xhs-style-preview-item .xhs-style-preview-sub {
+                    text-shadow: none;
+                }
+                .xhs-text-cover-mix-pool {
+                    display: grid;
+                    grid-template-columns: repeat(4, minmax(0, 1fr));
+                    gap: 8px;
+                    margin-top: 8px;
+                }
+                .xhs-text-cover-mix-pill {
+                    appearance: none;
+                    -webkit-appearance: none;
+                    border: 1px solid rgba(0,0,0,0.12);
+                    border-radius: 999px;
+                    padding: 6px 8px;
+                    font-size: 12px;
+                    font-weight: 700;
+                    background: rgba(255,255,255,0.92);
+                    color: #333;
+                    cursor: pointer;
+                    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+                }
+                .xhs-text-cover-mix-pill:hover {
+                    transform: translateY(-1px);
+                    border-color: rgba(var(--xhs-rgb), 0.45);
+                }
+                .xhs-text-cover-mix-pill.active {
+                    border-color: rgba(var(--xhs-rgb), 0.86);
+                    box-shadow: 0 0 0 2px rgba(var(--xhs-rgb), 0.16);
+                    color: var(--xhs-c);
+                    background: rgba(var(--xhs-rgb), 0.08);
+                }
+                .xhs-text-cover-mix-pool.is-disabled .xhs-text-cover-mix-pill {
+                    opacity: 0.58;
+                    filter: saturate(0.35);
+                }
+                body.xhs-dark .xhs-text-cover-mix-pill {
+                    border: 1px solid rgba(255,255,255,0.16);
+                    background: rgba(255,255,255,0.05);
+                    color: rgba(255,255,255,0.90);
+                }
+                body.xhs-dark .xhs-text-cover-mix-pill.active {
+                    border-color: rgba(var(--xhs-rgb), 0.92);
+                    color: #fff;
+                    background: rgba(var(--xhs-rgb), 0.28);
                 }
                 .xhs-switch {
                     width: 40px; height: 22px; background: #ddd; border-radius: 11px;
@@ -1082,10 +1356,71 @@
                     pointer-events: none;
                     transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
                 }
+                .xhs-cover-toggle-menu {
+                    position: absolute;
+                    left: 10px;
+                    bottom: 34px;
+                    z-index: 4;
+                    display: flex;
+                    align-items: center;
+                    gap: 4px;
+                    padding: 4px;
+                    border: 1px solid rgba(0,0,0,0.10);
+                    border-radius: 999px;
+                    background: rgba(255,255,255,0.76);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+                    backdrop-filter: blur(6px);
+                    -webkit-backdrop-filter: blur(6px);
+                    opacity: 0;
+                    transform: translateY(6px);
+                    pointer-events: none;
+                    transition: opacity 0.16s ease, transform 0.16s ease;
+                }
+                .xhs-cover-toggle-menu::after {
+                    content: '';
+                    position: absolute;
+                    left: 0;
+                    right: 0;
+                    bottom: -8px;
+                    height: 8px;
+                }
+                .xhs-cover-toggle-item {
+                    border: 1px solid rgba(0,0,0,0.10);
+                    border-radius: 999px;
+                    min-width: 24px;
+                    height: 24px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    user-select: none;
+                    background: rgba(255,255,255,0.86);
+                    color: rgba(0,0,0,0.72);
+                    font-size: 10px;
+                    font-weight: 800;
+                    padding: 0 6px;
+                    line-height: 1;
+                    transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, filter 0.16s ease;
+                }
                 .xhs-card:hover .xhs-cover-toggle,
-                .xhs-card:focus-within .xhs-cover-toggle {
+                .xhs-card:focus-within .xhs-cover-toggle,
+                .xhs-cover-toggle:hover + .xhs-cover-toggle-menu,
+                .xhs-cover-toggle:focus + .xhs-cover-toggle-menu,
+                .xhs-cover-toggle-menu:hover,
+                .xhs-cover-toggle-menu:focus-within,
+                .xhs-card.xhs-cover-menu-open .xhs-cover-toggle-menu {
                     opacity: 1;
                     transform: translateY(0);
+                }
+                .xhs-card:hover .xhs-cover-toggle,
+                .xhs-card:focus-within .xhs-cover-toggle {
+                    pointer-events: auto;
+                }
+                .xhs-cover-toggle:hover + .xhs-cover-toggle-menu,
+                .xhs-cover-toggle:focus + .xhs-cover-toggle-menu,
+                .xhs-cover-toggle-menu:hover,
+                .xhs-cover-toggle-menu:focus-within,
+                .xhs-card.xhs-cover-menu-open .xhs-cover-toggle-menu {
                     pointer-events: auto;
                 }
                 body.xhs-dark .xhs-cover-toggle {
@@ -1093,7 +1428,21 @@
                     color: rgba(255,255,255,0.88);
                     border: 1px solid rgba(255,255,255,0.18);
                 }
+                body.xhs-dark .xhs-cover-toggle-menu {
+                    background: rgba(18,20,24,0.62);
+                    border: 1px solid rgba(255,255,255,0.18);
+                }
+                body.xhs-dark .xhs-cover-toggle-item {
+                    background: rgba(35,38,45,0.78);
+                    color: rgba(255,255,255,0.90);
+                    border: 1px solid rgba(255,255,255,0.16);
+                }
                 .xhs-cover-toggle:hover {
+                    border-color: rgba(var(--xhs-rgb), 0.48);
+                    color: var(--xhs-c);
+                    background: rgba(255,255,255,0.92);
+                }
+                .xhs-cover-toggle-item:hover {
                     border-color: rgba(var(--xhs-rgb), 0.48);
                     color: var(--xhs-c);
                     background: rgba(255,255,255,0.92);
@@ -1101,13 +1450,36 @@
                 body.xhs-dark .xhs-cover-toggle:hover {
                     background: rgba(30,33,39,0.82);
                 }
+                body.xhs-dark .xhs-cover-toggle-item:hover {
+                    background: rgba(30,33,39,0.82);
+                }
                 .xhs-cover-toggle.is-hidden {
                     background: rgba(var(--xhs-rgb), 0.22);
                     color: var(--xhs-c);
                     border-color: rgba(var(--xhs-rgb), 0.40);
                 }
+                .xhs-cover-toggle-item.is-active {
+                    background: rgba(var(--xhs-rgb), 0.22);
+                    color: var(--xhs-c);
+                    border-color: rgba(var(--xhs-rgb), 0.40);
+                }
+                .xhs-cover-toggle-item.is-current {
+                    box-shadow: inset 0 0 0 1px rgba(var(--xhs-rgb), 0.38);
+                }
+                .xhs-cover-toggle-item:not(.is-active) {
+                    filter: grayscale(0.45) saturate(0.60);
+                }
                 @media (hover: none), (pointer: coarse) {
-                    .xhs-cover-toggle {
+                    .xhs-cover-toggle:hover + .xhs-cover-toggle-menu,
+                    .xhs-cover-toggle:focus + .xhs-cover-toggle-menu,
+                    .xhs-cover-toggle-menu:hover,
+                    .xhs-cover-toggle-menu:focus-within {
+                        opacity: 0;
+                        transform: translateY(6px);
+                        pointer-events: none;
+                    }
+                    .xhs-cover-toggle,
+                    .xhs-card.xhs-cover-menu-open .xhs-cover-toggle-menu {
                         opacity: 1;
                         transform: translateY(0);
                         pointer-events: auto;
@@ -1326,6 +1698,482 @@
                 .xhs-card.xhs-has-unread {
                     box-shadow: 0 0 0 3px rgba(var(--xhs-rgb), ${isDark ? '0.18' : '0.14'}), 0 10px 28px rgba(0,0,0,0.10);
                 }
+
+                /* 文字封面风格（classic/notebook/glass/collage；mix_custom 会在混合池里按帖稳定随机） */
+                body[data-xhs-text-cover-style="classic"] .xhs-text-cover {
+                    letter-spacing: 0.02em;
+                }
+                body[data-xhs-text-cover-style="classic"] .xhs-deco.big {
+                    opacity: ${isDark ? '0.30' : '0.20'};
+                }
+                .xhs-text-cover.xhs-text-cover-structured {
+                    padding: 30px 16px 14px;
+                    min-height: 0;
+                    justify-content: center;
+                    align-items: flex-start;
+                    gap: 10px;
+                    background:
+                        linear-gradient(180deg, ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.62)'} 0%, rgba(0,0,0,0) 78%),
+                        var(--xhs-cover-bg, ${isDark ? '#2c2c2c' : '#fff'});
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)'};
+                    border-left: 4px solid rgba(var(--xhs-rgb), ${isDark ? '0.58' : '0.42'});
+                    box-shadow: inset 0 -1px 0 ${isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.45)'};
+                    text-shadow: none;
+                }
+                .xhs-text-cover.xhs-text-cover-structured.xhs-text-cover-structured-normal {
+                    min-height: 168px;
+                }
+                .xhs-text-cover.xhs-text-cover-structured.xhs-text-cover-structured-tall {
+                    min-height: 216px;
+                }
+                .xhs-text-cover.xhs-text-cover-structured::before {
+                    content: '结构速览';
+                    position: absolute;
+                    top: 9px;
+                    left: 14px;
+                    font-size: 11px;
+                    font-weight: 800;
+                    letter-spacing: 0.08em;
+                    color: ${isDark ? 'rgba(255,255,255,0.82)' : 'rgba(0,0,0,0.56)'};
+                    pointer-events: none;
+                }
+                .xhs-text-cover.xhs-text-cover-structured::after {
+                    content: '';
+                    position: absolute;
+                    left: 14px;
+                    right: 14px;
+                    top: 24px;
+                    height: 1px;
+                    background: linear-gradient(90deg, rgba(var(--xhs-rgb), ${isDark ? '0.36' : '0.28'}) 0%, rgba(0,0,0,0) 100%);
+                    pointer-events: none;
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-bg.secondary,
+                .xhs-text-cover.xhs-text-cover-structured .xhs-deco.band,
+                .xhs-text-cover.xhs-text-cover-structured .xhs-deco.tape,
+                .xhs-text-cover.xhs-text-cover-structured .xhs-deco.quote {
+                    display: none !important;
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-bg {
+                    opacity: ${isDark ? '0.24' : '0.18'};
+                    mix-blend-mode: normal;
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-deco.corner {
+                    font-size: 13px;
+                    opacity: ${isDark ? '0.28' : '0.20'};
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-deco.line {
+                    font-size: 8px;
+                    letter-spacing: 2.4px;
+                    opacity: ${isDark ? '0.24' : '0.17'};
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-deco.big {
+                    font-size: 60px;
+                    opacity: ${isDark ? '0.15' : '0.09'};
+                    mix-blend-mode: normal;
+                    transform: translate(-50%, -50%) rotate(0deg);
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-emoji-icon {
+                    font-size: 18px;
+                    margin: 0;
+                    align-self: flex-start;
+                    padding: 1px 6px;
+                    border-radius: 999px;
+                    background: ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.62)'};
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.06)'};
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-text-excerpt {
+                    font-size: 17px;
+                    line-height: 1.66;
+                    font-weight: 680;
+                    letter-spacing: 0;
+                    -webkit-line-clamp: 5;
+                    max-width: 90%;
+                    margin-top: 0;
+                    padding-left: 2px;
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-text-excerpt.dropcap::first-letter {
+                    float: none;
+                    font-size: inherit;
+                    line-height: inherit;
+                    padding-right: 0;
+                    margin-top: 0;
+                    opacity: inherit;
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-sticker {
+                    transform: rotate(0deg);
+                    right: 8px;
+                    bottom: 8px;
+                    padding: 2px 7px;
+                    font-size: 10px;
+                    letter-spacing: 0.2px;
+                    box-shadow: none;
+                    backdrop-filter: none;
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-hl {
+                    margin: 0 1px;
+                    padding: 0 1px;
+                    border-radius: 2px;
+                }
+                .xhs-text-cover.xhs-text-cover-structured .xhs-ul,
+                .xhs-text-cover.xhs-text-cover-structured .xhs-wave {
+                    text-decoration-thickness: 1.5px;
+                    text-underline-offset: 2px;
+                }
+
+                .xhs-text-cover.xhs-text-cover-notebook {
+                    padding: 22px 18px 16px;
+                    min-height: 0;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 10px;
+                    text-align: left;
+                    background-color: ${isDark ? '#1d2430' : '#f7f9fc'};
+                    background-image:
+                        linear-gradient(${isDark ? 'rgba(255,255,255,0.07)' : 'rgba(130,142,160,0.22)'} 1px, transparent 1px),
+                        linear-gradient(90deg, ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(130,142,160,0.20)'} 1px, transparent 1px),
+                        linear-gradient(180deg, ${isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.52)'} 0%, rgba(0,0,0,0) 68%);
+                    background-size: 20px 20px, 20px 20px, 100% 100%;
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.08)'};
+                    border-left: 2px solid rgba(var(--xhs-rgb), ${isDark ? '0.42' : '0.34'});
+                    box-shadow: inset 0 0 0 1px ${isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.85)'};
+                    text-shadow: none;
+                }
+                .xhs-text-cover.xhs-text-cover-notebook.xhs-text-cover-notebook-normal { min-height: 184px; }
+                .xhs-text-cover.xhs-text-cover-notebook.xhs-text-cover-notebook-tall { min-height: 232px; }
+                .xhs-text-cover.xhs-text-cover-notebook::before,
+                .xhs-text-cover.xhs-text-cover-notebook::after,
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-bg.secondary,
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-deco.band,
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-deco.tape,
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-deco.quote { display: none !important; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-bg { opacity: ${isDark ? '0.10' : '0.08'}; mix-blend-mode: normal; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-deco.corner { font-size: 12px; opacity: ${isDark ? '0.20' : '0.15'}; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-deco.line { font-size: 8px; letter-spacing: 3px; opacity: ${isDark ? '0.24' : '0.18'}; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-deco.big { font-size: 56px; opacity: ${isDark ? '0.13' : '0.09'}; mix-blend-mode: normal; transform: translate(-50%, -50%) rotate(-4deg); }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-emoji-icon { font-size: 28px; margin: 0; align-self: flex-end; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-text-excerpt {
+                    font-size: 22px;
+                    line-height: 1.52;
+                    font-weight: 820;
+                    letter-spacing: -0.02em;
+                    color: ${isDark ? '#F3F6FA' : '#2D2D2D'};
+                    -webkit-line-clamp: 5;
+                    margin-top: 0;
+                    max-width: 86%;
+                    align-self: center;
+                }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-text-excerpt.dropcap::first-letter { float: none; font-size: inherit; line-height: inherit; padding-right: 0; margin-top: 0; opacity: inherit; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-sticker { transform: rotate(0deg); right: 8px; bottom: 8px; padding: 2px 7px; font-size: 10px; letter-spacing: 0.2px; background: ${isDark ? 'rgba(0,0,0,0.32)' : 'rgba(255,255,255,0.72)'}; border: 1px solid ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.10)'}; box-shadow: none; backdrop-filter: none; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-hl { margin: 0 1px; padding: 0 3px; border-radius: 2px; background: linear-gradient(180deg, rgba(0,0,0,0) 58%, ${isDark ? 'rgba(255,233,95,0.42)' : 'rgba(253,252,71,0.70)'} 58%); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-wave,
+                .xhs-text-cover.xhs-text-cover-notebook .xhs-ul { text-decoration-thickness: 2px; text-underline-offset: 2px; }
+
+                .xhs-text-cover.xhs-text-cover-collage {
+                    padding: 26px 14px 14px;
+                    min-height: 0;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 10px;
+                    text-align: center;
+                    background-color: ${isDark ? '#D5B300' : '#FFDE00'};
+                    background-image: radial-gradient(${isDark ? 'rgba(0,0,0,0.52)' : 'rgba(0,0,0,0.36)'} 1.4px, transparent 0);
+                    background-size: 18px 18px;
+                    border: 3px solid ${isDark ? 'rgba(0,0,0,0.82)' : 'rgba(0,0,0,0.88)'};
+                    box-shadow: 0 12px 24px rgba(0,0,0,${isDark ? '0.34' : '0.18'});
+                    text-shadow: none;
+                }
+                .xhs-text-cover.xhs-text-cover-collage.xhs-text-cover-collage-normal { min-height: 184px; }
+                .xhs-text-cover.xhs-text-cover-collage.xhs-text-cover-collage-tall { min-height: 232px; }
+                .xhs-text-cover.xhs-text-cover-collage::before {
+                    content: '';
+                    position: absolute;
+                    top: 9px;
+                    left: 50%;
+                    transform: translateX(-50%) rotate(-3deg);
+                    width: 86px;
+                    height: 22px;
+                    background: ${isDark ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.45)'};
+                    border-left: 2px dashed rgba(0,0,0,0.14);
+                    border-right: 2px dashed rgba(0,0,0,0.14);
+                    pointer-events: none;
+                }
+                .xhs-text-cover.xhs-text-cover-collage::after,
+                .xhs-text-cover.xhs-text-cover-collage .xhs-bg.secondary,
+                .xhs-text-cover.xhs-text-cover-collage .xhs-deco.band,
+                .xhs-text-cover.xhs-text-cover-collage .xhs-deco.quote,
+                .xhs-text-cover.xhs-text-cover-collage .xhs-deco.line,
+                .xhs-text-cover.xhs-text-cover-collage .xhs-deco.tape { display: none !important; }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-bg { opacity: ${isDark ? '0.05' : '0.03'}; mix-blend-mode: multiply; }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-deco.corner { font-size: 18px; opacity: ${isDark ? '0.55' : '0.38'}; color: rgba(0,0,0,0.72); }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-deco.big { font-size: 54px; opacity: ${isDark ? '0.22' : '0.14'}; transform: translate(-50%, -50%) rotate(8deg); mix-blend-mode: multiply; color: rgba(0,0,0,0.62); }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-emoji-icon {
+                    font-size: 18px;
+                    margin: 10px 0 2px;
+                    padding: 0 8px 1px;
+                    border-radius: 999px;
+                    background: rgba(255,255,255,0.95);
+                    border: 2px solid rgba(0,0,0,0.86);
+                    box-shadow: 3px 3px 0 rgba(0,0,0,0.86);
+                    transform: rotate(-7deg);
+                    align-self: flex-start;
+                }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-text-excerpt {
+                    font-size: 24px;
+                    line-height: 1.34;
+                    font-weight: 900;
+                    letter-spacing: -0.01em;
+                    color: ${isDark ? '#121212' : '#141414'};
+                    -webkit-line-clamp: 4;
+                    max-width: 90%;
+                    margin-top: 0;
+                    background: rgba(255,255,255,0.96);
+                    border: 3px solid rgba(0,0,0,0.90);
+                    box-shadow: 7px 7px 0 rgba(0,0,0,0.88);
+                    padding: 11px 12px 10px;
+                    transform: rotate(-2.4deg);
+                }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-text-excerpt.dropcap::first-letter { float: none; font-size: inherit; line-height: inherit; padding-right: 0; margin-top: 0; opacity: inherit; }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-sticker {
+                    transform: rotate(5deg);
+                    right: 10px;
+                    bottom: 10px;
+                    padding: 2px 9px;
+                    font-size: 11px;
+                    color: #fff;
+                    background: #FF4757;
+                    border: 2px solid rgba(0,0,0,0.88);
+                    box-shadow: 4px 4px 0 rgba(0,0,0,0.88);
+                    border-radius: 4px;
+                    backdrop-filter: none;
+                }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-hl {
+                    margin: 0 1px;
+                    padding: 0 2px;
+                    border-radius: 2px;
+                    background: rgba(255, 222, 0, 0.92);
+                }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-ul,
+                .xhs-text-cover.xhs-text-cover-collage .xhs-wave {
+                    text-decoration-color: rgba(0,0,0,0.68);
+                    text-underline-offset: 2px;
+                }
+                .xhs-text-cover.xhs-text-cover-collage .xhs-dot::after { bottom: -7px; color: rgba(0,0,0,0.72); }
+
+                .xhs-text-cover.xhs-text-cover-poster {
+                    padding: 22px 16px 12px;
+                    min-height: 0;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 10px;
+                    text-align: center;
+                    background:
+                        radial-gradient(circle at 86% 14%, rgba(var(--xhs-rgb), ${isDark ? '0.22' : '0.16'}) 0%, rgba(0,0,0,0) 54%),
+                        linear-gradient(150deg, ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.68)'} 0%, rgba(0,0,0,0) 64%),
+                        var(--xhs-cover-bg, ${isDark ? '#232323' : '#fff'});
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)'};
+                    box-shadow:
+                        inset 0 0 0 1px ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.85)'},
+                        0 8px 18px rgba(0,0,0,${isDark ? '0.26' : '0.12'});
+                    text-shadow: none;
+                }
+                .xhs-text-cover.xhs-text-cover-poster.xhs-text-cover-poster-normal { min-height: 184px; }
+                .xhs-text-cover.xhs-text-cover-poster.xhs-text-cover-poster-tall { min-height: 232px; }
+                .xhs-text-cover.xhs-text-cover-poster::before { content: ''; position: absolute; inset: 10px; border: 1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.10)'}; border-radius: 10px; pointer-events: none; }
+                .xhs-text-cover.xhs-text-cover-poster::after { content: ''; position: absolute; inset: -24% -20% auto auto; width: 170px; height: 170px; border-radius: 50%; background: radial-gradient(circle, rgba(var(--xhs-rgb), ${isDark ? '0.40' : '0.28'}) 0%, rgba(0,0,0,0) 72%); pointer-events: none; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-bg.secondary,
+                .xhs-text-cover.xhs-text-cover-poster .xhs-deco.quote,
+                .xhs-text-cover.xhs-text-cover-poster .xhs-deco.band,
+                .xhs-text-cover.xhs-text-cover-poster .xhs-deco.tape { display: none !important; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-bg { opacity: ${isDark ? '0.16' : '0.11'}; mix-blend-mode: normal; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-deco.corner { font-size: 12px; opacity: ${isDark ? '0.18' : '0.14'}; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-deco.line { display: none !important; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-deco.big { font-size: 72px; opacity: ${isDark ? '0.14' : '0.10'}; mix-blend-mode: normal; transform: translate(-50%, -50%) rotate(-6deg); }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-emoji-icon { margin: 0; font-size: 24px; padding: 0; background: none; border: none; align-self: center; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-text-excerpt {
+                    font-size: 19px;
+                    line-height: 1.44;
+                    font-weight: 840;
+                    letter-spacing: 0.01em;
+                    -webkit-line-clamp: 5;
+                    margin-top: 0;
+                    text-wrap: balance;
+                    max-width: 88%;
+                    align-self: center;
+                }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-text-excerpt.dropcap::first-letter { float: none; font-size: inherit; line-height: inherit; padding-right: 0; margin-top: 0; opacity: inherit; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-sticker { transform: rotate(0deg); right: 9px; bottom: 9px; padding: 2px 8px; font-size: 10px; letter-spacing: 0.25px; background: ${isDark ? 'rgba(0,0,0,0.36)' : 'rgba(255,255,255,0.74)'}; border: 1px solid ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.10)'}; box-shadow: none; backdrop-filter: blur(2px); }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-hl { background: rgba(var(--xhs-rgb), ${isDark ? '0.34' : '0.24'}); border-radius: 4px; margin: 0 1px; padding: 0 3px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-ul,
+                .xhs-text-cover.xhs-text-cover-poster .xhs-wave { text-decoration: none; border-bottom: 2px solid rgba(var(--xhs-rgb), ${isDark ? '0.56' : '0.44'}); }
+                .xhs-text-cover.xhs-text-cover-poster .xhs-dot::after { display: none; }
+
+                .xhs-text-cover.xhs-text-cover-glass {
+                    padding: 20px 16px 12px;
+                    min-height: 0;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 10px;
+                    text-align: center;
+                    background:
+                        linear-gradient(160deg, ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.72)'} 0%, rgba(255,255,255,0.08) 44%, rgba(0,0,0,0) 100%),
+                        radial-gradient(circle at 18% 12%, rgba(var(--xhs-rgb), ${isDark ? '0.22' : '0.16'}) 0%, rgba(0,0,0,0) 45%),
+                        var(--xhs-cover-bg, ${isDark ? '#232833' : '#dfe9f6'});
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.24)' : 'rgba(255,255,255,0.80)'};
+                    box-shadow: 0 12px 28px rgba(0,0,0,${isDark ? '0.28' : '0.14'});
+                    backdrop-filter: blur(7px) saturate(120%);
+                    -webkit-backdrop-filter: blur(7px) saturate(120%);
+                }
+                .xhs-text-cover.xhs-text-cover-glass::before {
+                    content: '';
+                    position: absolute;
+                    inset: 14px 11%;
+                    border-radius: 12px;
+                    background: ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.34)'};
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.62)'};
+                    box-shadow: inset 0 1px 0 rgba(255,255,255,0.35);
+                    pointer-events: none;
+                }
+                .xhs-text-cover.xhs-text-cover-glass.xhs-text-cover-glass-normal { min-height: 176px; }
+                .xhs-text-cover.xhs-text-cover-glass.xhs-text-cover-glass-tall { min-height: 224px; }
+                .xhs-text-cover.xhs-text-cover-glass::after,
+                .xhs-text-cover.xhs-text-cover-glass .xhs-bg.secondary,
+                .xhs-text-cover.xhs-text-cover-glass .xhs-deco.tape,
+                .xhs-text-cover.xhs-text-cover-glass .xhs-deco.line { display: none !important; }
+                .xhs-text-cover.xhs-text-cover-glass .xhs-bg { opacity: ${isDark ? '0.18' : '0.12'}; mix-blend-mode: normal; }
+                .xhs-text-cover.xhs-text-cover-glass .xhs-deco.corner { font-size: 12px; opacity: ${isDark ? '0.20' : '0.14'}; }
+                .xhs-text-cover.xhs-text-cover-glass .xhs-deco.big { font-size: 64px; opacity: ${isDark ? '0.16' : '0.11'}; transform: translate(-50%, -50%) rotate(-8deg); }
+                .xhs-text-cover.xhs-text-cover-glass .xhs-emoji-icon { font-size: 22px; margin: 0; padding: 1px 8px; border-radius: 999px; background: ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.68)'}; border: 1px solid ${isDark ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.90)'}; align-self: center; z-index: 1; }
+                .xhs-text-cover.xhs-text-cover-glass .xhs-text-excerpt { font-size: 18px; line-height: 1.58; font-weight: 700; -webkit-line-clamp: 5; margin-top: 0; max-width: 76%; align-self: center; z-index: 1; text-shadow: 0 1px 2px rgba(0,0,0,${isDark ? '0.20' : '0.06'}); }
+                .xhs-text-cover.xhs-text-cover-glass .xhs-text-excerpt.dropcap::first-letter { float: none; font-size: inherit; line-height: inherit; padding-right: 0; margin-top: 0; opacity: inherit; }
+                .xhs-text-cover.xhs-text-cover-glass .xhs-sticker { transform: rotate(0deg); right: 8px; bottom: 8px; font-size: 10px; padding: 2px 7px; box-shadow: none; backdrop-filter: blur(4px); }
+
+                .xhs-text-cover.xhs-text-cover-magazine {
+                    padding: 24px 16px 14px;
+                    min-height: 0;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 10px;
+                    text-align: center;
+                    background:
+                        linear-gradient(180deg, rgba(var(--xhs-rgb), ${isDark ? '0.22' : '0.16'}) 0 14px, rgba(0,0,0,0) 14px),
+                        linear-gradient(160deg, ${isDark ? 'rgba(0,0,0,0.20)' : 'rgba(255,255,255,0.55)'} 0%, rgba(0,0,0,0) 55%),
+                        var(--xhs-cover-bg, ${isDark ? '#1f2556' : '#2f54eb'});
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.34)'};
+                    box-shadow: 0 10px 24px rgba(0,0,0,${isDark ? '0.28' : '0.12'});
+                    text-shadow: none;
+                }
+                .xhs-text-cover.xhs-text-cover-magazine::before {
+                    content: 'COVER STORY';
+                    position: absolute;
+                    top: 8px;
+                    left: 12px;
+                    font-size: 9px;
+                    letter-spacing: 0.18em;
+                    font-weight: 800;
+                    color: rgba(255,255,255,0.86);
+                    pointer-events: none;
+                }
+                .xhs-text-cover.xhs-text-cover-magazine::after {
+                    content: '';
+                    position: absolute;
+                    left: 12px;
+                    right: 12px;
+                    top: 22px;
+                    height: 1px;
+                    background: rgba(255,255,255,0.35);
+                    pointer-events: none;
+                }
+                .xhs-text-cover.xhs-text-cover-magazine.xhs-text-cover-magazine-normal { min-height: 186px; }
+                .xhs-text-cover.xhs-text-cover-magazine.xhs-text-cover-magazine-tall { min-height: 228px; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-bg.secondary,
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-deco.quote,
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-deco.tape,
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-deco.corner { display: none !important; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-bg { opacity: ${isDark ? '0.12' : '0.08'}; mix-blend-mode: normal; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-deco.band { opacity: ${isDark ? '0.20' : '0.14'}; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-deco.line { font-size: 8px; letter-spacing: 4px; opacity: ${isDark ? '0.30' : '0.24'}; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-deco.big { font-size: 70px; opacity: ${isDark ? '0.16' : '0.12'}; transform: translate(-50%, -50%) rotate(-10deg); }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-emoji-icon { margin: 0; font-size: 18px; padding: 1px 6px; border-radius: 4px; background: ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.80)'}; border: 1px solid ${isDark ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.95)'}; align-self: flex-start; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-text-excerpt {
+                    font-size: 24px;
+                    line-height: 1.24;
+                    font-weight: 880;
+                    letter-spacing: 0.01em;
+                    -webkit-line-clamp: 5;
+                    margin-top: 4px;
+                    max-width: 88%;
+                    color: ${isDark ? '#1f2556' : '#2f54eb'};
+                    background: rgba(255,255,255,0.90);
+                    border: 1px solid rgba(255,255,255,0.96);
+                    border-radius: 6px;
+                    padding: 10px 10px 8px;
+                    align-self: center;
+                    text-align: left;
+                    text-shadow: none;
+                    box-shadow: 0 8px 18px rgba(0,0,0,${isDark ? '0.32' : '0.18'});
+                }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-text-excerpt.dropcap::first-letter { float: none; font-size: inherit; line-height: inherit; padding-right: 0; margin-top: 0; opacity: inherit; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-sticker { transform: rotate(0deg); right: 8px; bottom: 8px; font-size: 10px; padding: 2px 8px; letter-spacing: 0.22px; box-shadow: none; backdrop-filter: none; }
+                .xhs-text-cover.xhs-text-cover-magazine .xhs-hl { background: rgba(255,255,255,${isDark ? '0.28' : '0.22'}); color: inherit; border-radius: 3px; margin: 0 1px; padding: 0 2px; }
+
+                .xhs-text-cover.xhs-text-cover-aura {
+                    padding: 20px 16px 12px;
+                    min-height: 0;
+                    justify-content: center;
+                    align-items: center;
+                    text-align: center;
+                    gap: 10px;
+                    background-color: ${isDark ? '#27202f' : '#ffecd2'};
+                    background-image:
+                        radial-gradient(at 0% 0%, ${isDark ? 'rgba(82,70,110,0.75)' : 'rgba(50,20,80,0.42)'} 0, transparent 52%),
+                        radial-gradient(at 70% 12%, ${isDark ? 'rgba(58,88,150,0.62)' : 'rgba(59,79,154,0.35)'} 0, transparent 56%),
+                        radial-gradient(at 100% 0%, ${isDark ? 'rgba(138,52,106,0.60)' : 'rgba(146,54,112,0.30)'} 0, transparent 54%),
+                        linear-gradient(180deg, rgba(255,255,255,${isDark ? '0.04' : '0.26'}) 0%, rgba(0,0,0,0) 70%);
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.46)'};
+                    box-shadow: 0 10px 22px rgba(0,0,0,${isDark ? '0.28' : '0.12'});
+                }
+                .xhs-text-cover.xhs-text-cover-aura::before {
+                    content: '';
+                    position: absolute;
+                    inset: 16px 10%;
+                    border-radius: 12px;
+                    background: ${isDark ? 'rgba(15,16,24,0.46)' : 'rgba(255,255,255,0.42)'};
+                    border: 1px solid ${isDark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.62)'};
+                    backdrop-filter: blur(2px);
+                    pointer-events: none;
+                }
+                .xhs-text-cover.xhs-text-cover-aura::after {
+                    display: none !important;
+                }
+                .xhs-text-cover.xhs-text-cover-aura.xhs-text-cover-aura-normal { min-height: 176px; }
+                .xhs-text-cover.xhs-text-cover-aura.xhs-text-cover-aura-tall { min-height: 224px; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-bg.secondary,
+                .xhs-text-cover.xhs-text-cover-aura .xhs-deco.band,
+                .xhs-text-cover.xhs-text-cover-aura .xhs-deco.tape,
+                .xhs-text-cover.xhs-text-cover-aura .xhs-deco.line { display: none !important; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-bg { opacity: ${isDark ? '0.10' : '0.07'}; mix-blend-mode: normal; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-deco.corner { font-size: 12px; opacity: ${isDark ? '0.18' : '0.14'}; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-deco.quote { font-size: 40px; opacity: ${isDark ? '0.18' : '0.13'}; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-deco.big { font-size: 66px; opacity: ${isDark ? '0.13' : '0.09'}; transform: translate(-50%, -50%) rotate(0deg); }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-emoji-icon { font-size: 22px; margin: 0 0 6px; opacity: 0.92; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-text-excerpt {
+                    font-size: 20px;
+                    line-height: 1.60;
+                    font-weight: 650;
+                    letter-spacing: 0.02em;
+                    -webkit-line-clamp: 5;
+                    color: ${isDark ? '#F7F8FF' : '#ffffff'};
+                    font-family: "Songti SC", "SimSun", serif;
+                    max-width: 86%;
+                    padding: 8px 10px 6px;
+                    border-radius: 10px;
+                    background: ${isDark ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.12)'};
+                    text-shadow: 0 2px 10px rgba(0,0,0,0.40);
+                    z-index: 1;
+                }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-text-excerpt.dropcap::first-letter { float: none; font-size: inherit; line-height: inherit; padding-right: 0; margin-top: 0; opacity: inherit; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-sticker { transform: rotate(0deg); right: 8px; bottom: 8px; font-size: 10px; padding: 2px 8px; box-shadow: none; backdrop-filter: none; }
+                .xhs-text-cover.xhs-text-cover-aura .xhs-hl { background: rgba(255,255,255,${isDark ? '0.28' : '0.30'}); border-radius: 3px; margin: 0 1px; padding: 0 3px; }
                 
                 /* 关键词高亮：每套文字封面可通过 --hl-color 自定义 */
                 .xhs-hl { 
@@ -1663,6 +2511,7 @@
         forceReorderOnNextRender: false,
         coverRevalidateMs: 8 * 60 * 60 * 1000, // 主楼图懒校验周期（仅可见卡片触发）
         coverRevalidatedInSession: new Set(),
+        keywordRegexCache: { key: '', regex: null },
 
         getListJsonUrl() {
             const path = window.location.pathname;
@@ -2179,6 +3028,8 @@
             if (!el) return;
             const tid = String(el.getAttribute('data-tid') || el.dataset?.tid || '');
             if (!tid) return;
+            const cfg = Config.get();
+            const coverStyle = this.applyTextCoverStyleToCard(el, cfg);
             const hidden = Config.isCoverHidden(tid);
             const cover = el.querySelector('.xhs-cover');
             if (cover) {
@@ -2213,10 +3064,95 @@
             if (btn) {
                 btn.classList.toggle('is-hidden', hidden);
                 btn.textContent = hidden ? '🙈' : '🖼️';
-                btn.setAttribute('aria-pressed', hidden ? 'true' : 'false');
-                btn.setAttribute('title', hidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面');
-                btn.setAttribute('aria-label', hidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面');
+                btn.setAttribute('aria-pressed', el.classList.contains('xhs-cover-menu-open') ? 'true' : 'false');
+                btn.setAttribute('title', '封面选项（点击或悬浮展开）');
+                btn.setAttribute('aria-label', '封面选项（点击或悬浮展开）');
             }
+            const menuToggle = el.querySelector('.xhs-cover-toggle-item[data-action="cover-menu-toggle"]');
+            if (menuToggle) {
+                menuToggle.classList.toggle('is-active', hidden);
+                menuToggle.textContent = hidden ? '主图' : '仅文';
+                const tip = hidden ? '切换为主楼图封面' : '切换为仅文字封面';
+                menuToggle.setAttribute('title', tip);
+                menuToggle.setAttribute('aria-label', tip);
+                menuToggle.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+            }
+            const overrideStyle = Config.getCoverStyleOverride(tid);
+            el.querySelectorAll('.xhs-cover-toggle-item[data-action="cover-menu-style"][data-style]').forEach((item) => {
+                const style = String(item.getAttribute('data-style') || '').trim();
+                const isAuto = style === 'auto';
+                const isActive = isAuto ? !overrideStyle : style === overrideStyle;
+                const isCurrent = !isAuto && style === coverStyle;
+                item.classList.toggle('is-active', isActive);
+                item.classList.toggle('is-current', isCurrent);
+                item.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+                const badge = this._getCoverStyleBadge(style);
+                const tip = isAuto ? '跟随全局封面风格' : `切换为${badge.name}`;
+                item.setAttribute('title', tip);
+                item.setAttribute('aria-label', tip);
+            });
+            if (!hidden) {
+                el.classList.remove('xhs-cover-menu-open');
+            }
+        },
+
+        _getCoverStyleBadge(style) {
+            const s = String(style || '').trim();
+            const safe = (s === 'classic' || s === 'notebook' || s === 'glass' || s === 'collage' || s === 'auto') ? s : 'classic';
+            const map = {
+                auto: { short: '跟', name: '跟随全局' },
+                classic: { short: '经', name: '经典' },
+                notebook: { short: '笔', name: '笔记' },
+                glass: { short: '玻', name: '毛玻璃' },
+                collage: { short: '贴', name: '大字报拼贴风' }
+            };
+            return map[safe] || map.classic;
+        },
+
+        _resolveCoverStyleForTopic(tid, cfg) {
+            const key = String(tid || '').trim();
+            const currentCfg = cfg || Config.get();
+            const override = Config.getCoverStyleOverride(key);
+            if (override) return override;
+            return this._resolveTextCoverStyle(currentCfg.textCoverStyle || 'classic', key, currentCfg.textCoverMixPool);
+        },
+
+        applyTextCoverStyleToCard(card, cfg) {
+            const el = card?.nodeType === 1 ? card : null;
+            if (!el) return 'classic';
+            const tid = String(el.getAttribute('data-tid') || el.dataset?.tid || '');
+            if (!tid) return 'classic';
+            const coverStyle = this._resolveCoverStyleForTopic(tid, cfg);
+            const textCover = el.querySelector('.xhs-text-cover');
+            if (!textCover) return coverStyle;
+
+            textCover.classList.remove(
+                'xhs-text-cover-notebook',
+                'xhs-text-cover-glass',
+                'xhs-text-cover-collage',
+                'xhs-text-cover-notebook-normal',
+                'xhs-text-cover-notebook-tall',
+                'xhs-text-cover-glass-normal',
+                'xhs-text-cover-glass-tall',
+                'xhs-text-cover-collage-normal',
+                'xhs-text-cover-collage-tall'
+            );
+            if (coverStyle !== 'classic') {
+                textCover.classList.add(`xhs-text-cover-${coverStyle}`);
+            }
+            const excerptText = textCover.querySelector('.xhs-text-excerpt')?.textContent || '';
+            const sizeClass = String(this._getTextCoverSizeClass(coverStyle, excerptText) || '').trim();
+            if (sizeClass) textCover.classList.add(sizeClass);
+
+            const excerptEl = textCover.querySelector('.xhs-text-excerpt');
+            if (excerptEl) {
+                const coverRand = Utils.seededRandom(tid + '_cover2');
+                const hasEmoji = Boolean(textCover.querySelector('.xhs-emoji-icon'));
+                const useDropcap = coverStyle === 'classic' && coverRand() < 0.42 && !hasEmoji;
+                excerptEl.classList.toggle('dropcap', useDropcap);
+            }
+            textCover.dataset.coverStyle = coverStyle;
+            return coverStyle;
         },
 
         applyCoverPreferenceToAllCards(tid) {
@@ -3207,14 +4143,17 @@
             const emoji = emojiMatch ? emojiMatch[0] : null;
             
             // 处理摘要文本（关键词高亮）
-            const processedExcerpt = this.processText(excerpt, tid);
+            const processedExcerpt = this.processText(excerpt, tid, cfg);
             const primaryEmoji = Utils.getPrimaryCategoryEmoji(categoryHref, category);
             const categoryLabel = category ? (primaryEmoji ? `${primaryEmoji} ${category}` : category) : '';
             const watermarkEmoji = (primaryEmoji || (emoji ? emoji : '✦')).trim();
+            const coverStyle = this._resolveCoverStyleForTopic(tid, cfg);
+            const textCoverStyleClass = coverStyle === 'classic' ? '' : ` xhs-text-cover-${coverStyle}`;
+            const styleSizeClass = this._getTextCoverSizeClass(coverStyle, excerpt);
             const showCoverPills = Boolean(cfg.coverPillsEnabled);
             const tagPillsHtml = showCoverPills ? tagNames.slice(0, 4).map((t) => `<span class="xhs-tag-pill" data-tag-name="${Utils.escapeHtml(t)}" title="跳转到标签：${Utils.escapeHtml(t)}">#${Utils.escapeHtml(t)}</span>`).join('') : '';
             const extraTags = showCoverPills && tagNames.length > 4 ? `+${tagNames.length - 4}` : '';
-            const decoLayersHtml = this._generateTextCoverLayers(tid, watermarkEmoji);
+            const decoLayersHtml = this._generateTextCoverLayers(tid, watermarkEmoji, coverStyle);
             const unreadDisplay = unreadText || Utils.formatNumber(unreadNum);
             let stickerText = '';
             let stickerIsUnread = false;
@@ -3238,12 +4177,26 @@
                 }
             }
             const coverRand = Utils.seededRandom(tid + '_cover2');
-            const useDropcap = coverRand() < 0.42 && !emoji;
+            const useDropcap = coverStyle === 'classic' && coverRand() < 0.42 && !emoji;
             const coverHidden = Config.isCoverHidden(tid);
+            const coverOverrideStyle = Config.getCoverStyleOverride(tid);
+            const coverStyleBadge = this._getCoverStyleBadge(coverStyle);
+            const styleSourceText = coverOverrideStyle ? '已固定' : '跟随全局';
+            const coverToggleTip = `封面选项（当前${coverHidden ? '仅文字' : '主楼图'}，样式${coverStyleBadge.name}，${styleSourceText}）`;
+            const coverMenuHtml = `
+                <div class="xhs-cover-toggle-menu" role="menu" aria-label="封面选项">
+                    <span class="xhs-cover-toggle-item xhs-cover-toggle-item-mode${coverHidden ? ' is-active' : ''}" role="button" tabindex="0" data-action="cover-menu-toggle" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverHidden ? 'true' : 'false'}">${coverHidden ? '主图' : '仅文'}</span>
+                    <span class="xhs-cover-toggle-item${coverOverrideStyle === 'classic' ? ' is-active' : ''}${coverStyle === 'classic' ? ' is-current' : ''}" role="button" tabindex="0" data-action="cover-menu-style" data-style="classic" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverOverrideStyle === 'classic' ? 'true' : 'false'}">经</span>
+                    <span class="xhs-cover-toggle-item${coverOverrideStyle === 'notebook' ? ' is-active' : ''}${coverStyle === 'notebook' ? ' is-current' : ''}" role="button" tabindex="0" data-action="cover-menu-style" data-style="notebook" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverOverrideStyle === 'notebook' ? 'true' : 'false'}">笔</span>
+                    <span class="xhs-cover-toggle-item${coverOverrideStyle === 'glass' ? ' is-active' : ''}${coverStyle === 'glass' ? ' is-current' : ''}" role="button" tabindex="0" data-action="cover-menu-style" data-style="glass" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverOverrideStyle === 'glass' ? 'true' : 'false'}">玻</span>
+                    <span class="xhs-cover-toggle-item${coverOverrideStyle === 'collage' ? ' is-active' : ''}${coverStyle === 'collage' ? ' is-current' : ''}" role="button" tabindex="0" data-action="cover-menu-style" data-style="collage" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverOverrideStyle === 'collage' ? 'true' : 'false'}">贴</span>
+                    <span class="xhs-cover-toggle-item${!coverOverrideStyle ? ' is-active' : ''}" role="button" tabindex="0" data-action="cover-menu-style" data-style="auto" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${!coverOverrideStyle ? 'true' : 'false'}">跟</span>
+                </div>
+            `;
 
             const coverHtml = `
                 <div class="xhs-cover">
-                    <div class="xhs-text-cover s${styleIdx}">
+                    <div class="xhs-text-cover s${styleIdx}${textCoverStyleClass}${styleSizeClass}">
                         ${decoLayersHtml}
                         ${emoji ? `<div class="xhs-emoji-icon">${emoji}</div>` : ''}
                         <div class="xhs-text-excerpt ${useDropcap ? 'dropcap' : ''}">${processedExcerpt}</div>
@@ -3258,7 +4211,8 @@
                     ${pinned ? `<span class="xhs-pin">📌</span>` : ''}
                     ${featuredDomain ? `<span class="xhs-link-badge">🔗 ${Utils.escapeHtml(featuredDomain)}</span>` : ''}
                     ${stickerText ? `<span class="xhs-sticker${stickerIsUnread ? ' xhs-sticker-unread' : ''}">${Utils.escapeHtml(stickerText)}</span>` : ''}
-                    <span class="xhs-cover-toggle${coverHidden ? ' is-hidden' : ''}" role="button" tabindex="0" data-action="toggle-cover" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="${coverHidden ? 'true' : 'false'}" aria-label="${coverHidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面'}" title="${coverHidden ? '当前仅显示文字封面，点击恢复主楼图' : '当前显示主楼图，点击仅显示文字封面'}">${coverHidden ? '🙈' : '🖼️'}</span>
+                    <span class="xhs-cover-toggle${coverHidden ? ' is-hidden' : ''}" role="button" tabindex="0" data-action="toggle-cover" data-tid="${Utils.escapeHtml(tid)}" aria-pressed="false" aria-label="${Utils.escapeHtml(coverToggleTip)}" title="${Utils.escapeHtml(coverToggleTip)}">${coverHidden ? '🙈' : '🖼️'}</span>
+                    ${coverMenuHtml}
                 </div>
             `;
 
@@ -3348,7 +4302,28 @@
 
             const coverToggle = card.querySelector('.xhs-cover-toggle[data-action="toggle-cover"]');
             if (coverToggle) {
-                const handleCoverToggle = (e) => {
+                const handleCoverMenuToggle = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    card.classList.toggle('xhs-cover-menu-open');
+                    this.applyCoverPreferenceToCard(card);
+                };
+                coverToggle.addEventListener('click', handleCoverMenuToggle, true);
+                coverToggle.addEventListener('keydown', (e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+                    handleCoverMenuToggle(e);
+                }, true);
+                card.addEventListener('mouseleave', () => {
+                    if (!card.classList.contains('xhs-cover-menu-open')) return;
+                    card.classList.remove('xhs-cover-menu-open');
+                    this.applyCoverPreferenceToCard(card);
+                });
+            }
+
+            const coverMenuToggle = card.querySelector('.xhs-cover-toggle-item[data-action="cover-menu-toggle"]');
+            if (coverMenuToggle) {
+                const handleCoverModeToggle = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     e.stopImmediatePropagation();
@@ -3360,6 +4335,7 @@
                     const nextHidden = !nowHidden;
                     const selector = `.xhs-card[data-tid="${CSS.escape(key)}"]`;
                     document.querySelectorAll(selector).forEach((cardItem) => {
+                        cardItem.classList.remove('xhs-cover-menu-open');
                         this.applyCoverPreferenceToCard(cardItem);
                         if (!nextHidden) {
                             const cached = this.cache.get(key);
@@ -3370,12 +4346,37 @@
                         }
                     });
                 };
-                coverToggle.addEventListener('click', handleCoverToggle, true);
-                coverToggle.addEventListener('keydown', (e) => {
+                coverMenuToggle.addEventListener('click', handleCoverModeToggle, true);
+                coverMenuToggle.addEventListener('keydown', (e) => {
                     if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
-                    handleCoverToggle(e);
+                    handleCoverModeToggle(e);
                 }, true);
             }
+            card.querySelectorAll('.xhs-cover-toggle-item[data-action="cover-menu-style"][data-style]').forEach((menuItem) => {
+                const handleCoverStyleSet = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    const key = String(tid || '').trim();
+                    if (!key) return;
+                    const nextStyle = String(menuItem.getAttribute('data-style') || '').trim();
+                    if (nextStyle === 'auto') Config.unsetCoverStyleOverride(key);
+                    else Config.setCoverStyleOverride(key, nextStyle);
+                    if (!Config.isCoverHidden(key)) {
+                        Config.setCoverHidden(key, card.dataset.title || title || `话题 ${key}`);
+                    }
+                    const selector = `.xhs-card[data-tid="${CSS.escape(key)}"]`;
+                    document.querySelectorAll(selector).forEach((cardItem) => {
+                        cardItem.classList.remove('xhs-cover-menu-open');
+                        this.applyCoverPreferenceToCard(cardItem);
+                    });
+                };
+                menuItem.addEventListener('click', handleCoverStyleSet, true);
+                menuItem.addEventListener('keydown', (e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+                    handleCoverStyleSet(e);
+                }, true);
+            });
 
             this.applyCoverPreferenceToCard(card);
             return card;
@@ -3473,47 +4474,120 @@
             cover.appendChild(sticker);
         },
 
-        _generateTextCoverLayers(seed, watermarkEmoji) {
+        _resolveTextCoverStyle(styleMode, seed, mixPool) {
+            const mode = String(styleMode || 'classic').trim();
+            const singles = new Set(['classic', 'notebook', 'glass', 'collage']);
+            if (singles.has(mode)) return mode;
+            if (mode === 'mix_custom') {
+                const pool = Config.normalizeTextCoverMixPool(mixPool);
+                const rand = Utils.seededRandom(`${seed || ''}_cover_style_mix`);
+                const idx = Math.floor(rand() * pool.length);
+                return pool[idx] || 'classic';
+            }
+
+            return 'classic';
+        },
+
+        _getTextCoverSizeClass(style, excerpt) {
+            const len = (excerpt || '').length;
+            if (style === 'notebook') return len >= 64 ? ' xhs-text-cover-notebook-tall' : ' xhs-text-cover-notebook-normal';
+            if (style === 'glass') return len >= 66 ? ' xhs-text-cover-glass-tall' : ' xhs-text-cover-glass-normal';
+            if (style === 'collage') return len >= 58 ? ' xhs-text-cover-collage-tall' : ' xhs-text-cover-collage-normal';
+            return '';
+        },
+
+        _generateTextCoverLayers(seed, watermarkEmoji, style) {
             const rand = Utils.seededRandom(seed + '_cover');
+            const coverStyle =
+                (
+                    style === 'classic' ||
+                    style === 'notebook' ||
+                    style === 'glass' ||
+                    style === 'collage'
+                )
+                    ? style
+                    : 'classic';
             let html = '';
 
             const pat1 = this.bgPatterns[Math.floor(rand() * this.bgPatterns.length)];
             html += `<span class="xhs-bg ${pat1}"></span>`;
-            if (rand() < 0.35) {
+            const secondaryProb = coverStyle === 'classic'
+                ? 0.35
+                : (
+                    coverStyle === 'glass' ? 0.16 : (coverStyle === 'collage' ? 0.08 : 0.12)
+                );
+            if (rand() < secondaryProb) {
                 const pat2 = this.bgPatterns[Math.floor(rand() * this.bgPatterns.length)];
                 html += `<span class="xhs-bg secondary ${pat2}"></span>`;
             }
 
-            // 引号装饰：约 35% 概率出现
-            if (rand() < 0.35) {
+            const quoteProb = coverStyle === 'classic'
+                ? 0.35
+                : (coverStyle === 'glass' ? 0.14 : (coverStyle === 'collage' ? 0.04 : 0.16));
+            if (rand() < quoteProb) {
                 html += `<span class="xhs-deco quote tl">“</span><span class="xhs-deco quote br">”</span>`;
             }
 
-            // 斜向光带：约 40% 概率出现（可叠加一条弱的）
-            if (rand() < 0.40) html += `<span class="xhs-deco band b1"></span>`;
-            if (rand() < 0.22) html += `<span class="xhs-deco band b2"></span>`;
+            const band1Prob = coverStyle === 'classic'
+                ? 0.40
+                : (coverStyle === 'notebook' ? 0.12 : (coverStyle === 'collage' ? 0.03 : 0.10));
+            const band2Prob = coverStyle === 'classic'
+                ? 0.22
+                : (coverStyle === 'collage' ? 0.02 : 0.08);
+            if (rand() < band1Prob) html += `<span class="xhs-deco band b1"></span>`;
+            if (rand() < band2Prob) html += `<span class="xhs-deco band b2"></span>`;
 
-            // “胶带”装饰：约 28% 概率出现
-            if (rand() < 0.28) html += `<span class="xhs-deco tape t1"></span>`;
-            if (rand() < 0.18) html += `<span class="xhs-deco tape t2"></span>`;
+            const tape1Prob = coverStyle === 'classic'
+                ? 0.28
+                : (coverStyle === 'glass' ? 0.02 : (coverStyle === 'collage' ? 0.0 : 0.05));
+            const tape2Prob = coverStyle === 'classic'
+                ? 0.18
+                : (coverStyle === 'glass' ? 0.01 : (coverStyle === 'collage' ? 0.0 : 0.03));
+            if (rand() < tape1Prob) html += `<span class="xhs-deco tape t1"></span>`;
+            if (rand() < tape2Prob) html += `<span class="xhs-deco tape t2"></span>`;
 
-            // 角落装饰：0-4 个，偏向 2-3 个
             const corners = ['tl', 'tr', 'bl', 'br'];
             const r = rand();
             let cornerCount;
-            if (r < 0.05) cornerCount = 0;
-            else if (r < 0.15) cornerCount = 1;
-            else if (r < 0.50) cornerCount = 2;
-            else if (r < 0.85) cornerCount = 3;
-            else cornerCount = 4;
+            if (coverStyle === 'classic') {
+                if (r < 0.05) cornerCount = 0;
+                else if (r < 0.15) cornerCount = 1;
+                else if (r < 0.50) cornerCount = 2;
+                else if (r < 0.85) cornerCount = 3;
+                else cornerCount = 4;
+            } else if (coverStyle === 'glass') {
+                if (r < 0.20) cornerCount = 0;
+                else if (r < 0.84) cornerCount = 1;
+                else cornerCount = 2;
+            } else if (coverStyle === 'collage') {
+                if (r < 0.15) cornerCount = 1;
+                else if (r < 0.78) cornerCount = 2;
+                else cornerCount = 3;
+            } else if (coverStyle === 'notebook') {
+                if (r < 0.15) cornerCount = 0;
+                else if (r < 0.70) cornerCount = 1;
+                else cornerCount = 2;
+            } else {
+                if (r < 0.22) cornerCount = 0;
+                else if (r < 0.75) cornerCount = 1;
+                else cornerCount = 2;
+            }
             const pickedCorners = [...corners].sort(() => rand() - 0.5).slice(0, cornerCount);
             for (const pos of pickedCorners) {
                 const deco = this.cornerDecos[Math.floor(rand() * this.cornerDecos.length)];
                 html += `<span class="xhs-deco corner ${pos}">${deco}</span>`;
             }
 
-            // 线条装饰：最多两条
-            const lineCount = rand() < 0.62 ? 1 : (rand() < 0.28 ? 2 : 0);
+            let lineCount;
+            if (coverStyle === 'classic') {
+                lineCount = rand() < 0.62 ? 1 : (rand() < 0.28 ? 2 : 0);
+            } else if (coverStyle === 'notebook') {
+                lineCount = rand() < 0.74 ? 1 : (rand() < 0.18 ? 2 : 0);
+            } else if (coverStyle === 'collage') {
+                lineCount = 0;
+            } else {
+                lineCount = rand() < 0.42 ? 1 : 0;
+            }
             const linePositions = ['line-t', 'line-b'];
             for (let i = 0; i < lineCount; i++) {
                 const ch = this.lineChars[Math.floor(rand() * this.lineChars.length)];
@@ -3522,25 +4596,76 @@
                 html += `<span class="xhs-deco line ${pos}">${ch.repeat(count)}</span>`;
             }
 
-            // 大水印：多位置变体
-            const posIdx = Math.floor(rand() * 4) + 1;
+            const posIdx = coverStyle === 'glass'
+                ? (Math.floor(rand() * 2) + 1)
+                : (coverStyle === 'collage' ? (Math.floor(rand() * 2) + 2) : (Math.floor(rand() * 4) + 1));
             html += `<span class="xhs-deco big p${posIdx}">${Utils.escapeHtml(watermarkEmoji || '✦')}</span>`;
 
             return html;
         },
 
-        processText(text, seed) {
-            const rand = Utils.seededRandom(seed);
-            
-            // 交大水源特色关键词
-            const keywords = /闵行|徐汇|电院|机动|船建|安泰|保研|考研|选课|GPA|思源|东川路|二手|出|求购|拼车|合租|猫|狗/g;
-            
-            // 多样化强调（参考 LinuxDo 版的文本效果），按 seed 伪随机选择样式
-            const styles = ['xhs-hl', 'xhs-ul', 'xhs-wave', 'xhs-dot', 'xhs-bd'];
-            return text.replace(keywords, (match) => {
-                const style = styles[Math.floor(rand() * styles.length)];
-                return `<span class="${style}">${match}</span>`;
+        _getKeywordRegex(keywords) {
+            const arr = Array.isArray(keywords) ? keywords : [];
+            const key = arr.join('\u0001');
+            if (this.keywordRegexCache?.key === key) return this.keywordRegexCache.regex;
+            let regex = null;
+            if (arr.length) {
+                const escaped = arr
+                    .map((word) => Utils.escapeRegExp(word))
+                    .filter(Boolean)
+                    .sort((a, b) => b.length - a.length);
+                if (escaped.length) {
+                    try { regex = new RegExp(escaped.join('|'), 'giu'); } catch { regex = null; }
+                }
+            }
+            this.keywordRegexCache = { key, regex };
+            return regex;
+        },
+
+        _pickKeywordHighlightClass(styleMode, rand) {
+            const mode = Config.normalizeKeywordHighlightStyle(styleMode);
+            if (mode === 'random') {
+                const styles = ['xhs-hl', 'xhs-ul', 'xhs-wave', 'xhs-dot', 'xhs-bd'];
+                return styles[Math.floor(rand() * styles.length)] || 'xhs-hl';
+            }
+            const map = {
+                hl: 'xhs-hl',
+                ul: 'xhs-ul',
+                wave: 'xhs-wave',
+                dot: 'xhs-dot',
+                bd: 'xhs-bd'
+            };
+            return map[mode] || 'xhs-hl';
+        },
+
+        processText(text, seed, cfg) {
+            const raw = String(text || '');
+            if (!raw) return '';
+            const currentCfg = cfg || Config.get();
+            if (!currentCfg.keywordHighlightEnabled) return Utils.escapeHtml(raw);
+            const keywords = Config.normalizeKeywordHighlightLexicon(currentCfg.keywordHighlightLexicon);
+            if (!keywords.length) return Utils.escapeHtml(raw);
+
+            const keywordRegex = this._getKeywordRegex(keywords);
+            if (!keywordRegex) return Utils.escapeHtml(raw);
+
+            const rand = Utils.seededRandom(`${seed || ''}_keyword`);
+            let lastIndex = 0;
+            let out = '';
+            let hit = false;
+            keywordRegex.lastIndex = 0;
+            raw.replace(keywordRegex, (match, offset) => {
+                const index = Number(offset) || 0;
+                if (index > lastIndex) out += Utils.escapeHtml(raw.slice(lastIndex, index));
+                const cls = this._pickKeywordHighlightClass(currentCfg.keywordHighlightStyle, rand);
+                out += `<span class="${cls}">${Utils.escapeHtml(match)}</span>`;
+                lastIndex = index + match.length;
+                hit = true;
+                return match;
             });
+            if (!hit) return Utils.escapeHtml(raw);
+            if (lastIndex < raw.length) out += Utils.escapeHtml(raw.slice(lastIndex));
+            return out;
         }
     };
 
@@ -4117,6 +5242,7 @@
             document.body.dataset.xhsStatLikes = (cfg.showStats && cfg.showStatLikes) ? '1' : '0';
             document.body.dataset.xhsStatReplies = (cfg.showStats && cfg.showStatReplies) ? '1' : '0';
             document.body.dataset.xhsStatViews = (cfg.showStats && cfg.showStatViews) ? '1' : '0';
+            document.body.dataset.xhsTextCoverStyle = cfg.textCoverStyle || 'classic';
             try { this.applyTopicEnhance(); } catch {}
             try { TopicScroll.update(); } catch {}
             // 设置按钮可能需要根据图标配置刷新
@@ -4175,6 +5301,11 @@
                             cards: document.querySelectorAll('.xhs-card').length,
                             cols: (Grid._getDirectColumns?.() || []).length,
                             gridMode: Boolean(Grid.container?.classList?.contains?.('grid-mode')),
+                            textCoverStyle: Config.get().textCoverStyle || 'classic',
+                            textCoverMixPool: Config.get().textCoverMixPool || [],
+                            keywordHighlightEnabled: Boolean(Config.get().keywordHighlightEnabled),
+                            keywordHighlightStyle: Config.get().keywordHighlightStyle || 'random',
+                            keywordHighlightCount: Config.normalizeKeywordHighlightLexicon(Config.get().keywordHighlightLexicon).length,
                             overfetchMode: Boolean(Config.get().overfetchMode),
                             imgCropEnabled: Boolean(Config.get().imgCropEnabled),
                             imgCropBaseRatio: Number(Config.get().imgCropBaseRatio) || 0,
@@ -4330,6 +5461,8 @@
                 const svgIconColorKey = showGrid ? 'settingsIconGridColor' : 'settingsIconGearColor';
                 const svgIconColorDesc = showGrid ? '仅“书”样式生效' : '仅“设置齿轮”样式生效';
                 const svgIconColorPresetDesc = showGrid ? '仅“书”样式生效' : '一键套用（仍可继续微调）';
+                const keywordLexiconText = Utils.escapeHtml(cfg.keywordHighlightLexicon || '');
+                const keywordLexiconCount = Config.normalizeKeywordHighlightLexicon(cfg.keywordHighlightLexicon).length;
                 panel.innerHTML = `
                     <div class="xhs-panel-header">
                         <span>小水书 v${VERSION}</span>
@@ -4410,6 +5543,77 @@
                                     <div class="xhs-desc">分类/标签 pill（仅影响封面左上角展示）</div>
                                 </div>
                                 <div class="xhs-switch ${cfg.coverPillsEnabled?'on':''}" data-key="coverPillsEnabled"></div>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>文字封面风格</div>
+                                    <div class="xhs-desc">统一封面构件：经典/笔记/毛玻璃/大字报拼贴 + 自定义混合</div>
+                                </div>
+                                <select class="xhs-input" data-select="textCoverStyle" style="width: 180px;">
+                                    <option value="classic" ${cfg.textCoverStyle === 'classic' ? 'selected' : ''}>经典（当前）</option>
+                                    <option value="notebook" ${cfg.textCoverStyle === 'notebook' ? 'selected' : ''}>方格笔记版</option>
+                                    <option value="glass" ${cfg.textCoverStyle === 'glass' ? 'selected' : ''}>毛玻璃版</option>
+                                    <option value="collage" ${cfg.textCoverStyle === 'collage' ? 'selected' : ''}>大字报拼贴风</option>
+                                    <option value="mix_custom" ${cfg.textCoverStyle === 'mix_custom' ? 'selected' : ''}>自定义混合</option>
+                                </select>
+                            </div>
+                            <div class="xhs-row">
+                                <div style="width:100%;">
+                                    <div>风格预览（点击即切换）</div>
+                                    <div class="xhs-desc">混合模式会按帖子稳定随机分配，不会每次刷新乱跳</div>
+                                    <div class="xhs-style-preview-grid">
+                                        <button class="xhs-style-preview-item ${cfg.textCoverStyle === 'classic' ? 'active' : ''}" type="button" data-action="setTextCoverStyle" data-style="classic"><span class="xhs-style-preview-label">经典</span><span class="xhs-style-preview-sub">C</span></button>
+                                        <button class="xhs-style-preview-item ${cfg.textCoverStyle === 'notebook' ? 'active' : ''}" type="button" data-action="setTextCoverStyle" data-style="notebook"><span class="xhs-style-preview-label">笔记</span><span class="xhs-style-preview-sub">N</span></button>
+                                        <button class="xhs-style-preview-item ${cfg.textCoverStyle === 'glass' ? 'active' : ''}" type="button" data-action="setTextCoverStyle" data-style="glass"><span class="xhs-style-preview-label">毛玻璃</span><span class="xhs-style-preview-sub">G</span></button>
+                                        <button class="xhs-style-preview-item ${cfg.textCoverStyle === 'collage' ? 'active' : ''}" type="button" data-action="setTextCoverStyle" data-style="collage"><span class="xhs-style-preview-label">拼贴</span><span class="xhs-style-preview-sub">C+</span></button>
+                                        <button class="xhs-style-preview-item ${cfg.textCoverStyle === 'mix_custom' ? 'active' : ''}" type="button" data-action="setTextCoverStyle" data-style="mix_custom"><span class="xhs-style-preview-label">混合</span><span class="xhs-style-preview-sub">Mix</span></button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="xhs-row">
+                                <div style="width:100%;">
+                                    <div>混合模式样式池</div>
+                                    <div class="xhs-desc">仅“自定义混合”生效；可多选，且至少保留一种样式</div>
+                                    <div class="xhs-text-cover-mix-pool ${cfg.textCoverStyle === 'mix_custom' ? '' : 'is-disabled'}">
+                                        <button class="xhs-text-cover-mix-pill ${cfg.textCoverMixPool.includes('classic') ? 'active' : ''}" type="button" data-action="toggleTextCoverMixStyle" data-style="classic">经典</button>
+                                        <button class="xhs-text-cover-mix-pill ${cfg.textCoverMixPool.includes('notebook') ? 'active' : ''}" type="button" data-action="toggleTextCoverMixStyle" data-style="notebook">笔记</button>
+                                        <button class="xhs-text-cover-mix-pill ${cfg.textCoverMixPool.includes('glass') ? 'active' : ''}" type="button" data-action="toggleTextCoverMixStyle" data-style="glass">毛玻璃</button>
+                                        <button class="xhs-text-cover-mix-pill ${cfg.textCoverMixPool.includes('collage') ? 'active' : ''}" type="button" data-action="toggleTextCoverMixStyle" data-style="collage">拼贴</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>关键词突出显示</div>
+                                    <div class="xhs-desc">按词库高亮封面摘要关键词</div>
+                                </div>
+                                <div class="xhs-switch ${cfg.keywordHighlightEnabled?'on':''}" data-key="keywordHighlightEnabled"></div>
+                            </div>
+                            <div class="xhs-row">
+                                <div>
+                                    <div>关键词样式</div>
+                                    <div class="xhs-desc">支持下划线、背景高亮、波浪线等效果</div>
+                                </div>
+                                <select class="xhs-input" data-select="keywordHighlightStyle" style="width: 150px;">
+                                    <option value="random" ${cfg.keywordHighlightStyle === 'random' ? 'selected' : ''}>随机混搭</option>
+                                    <option value="hl" ${cfg.keywordHighlightStyle === 'hl' ? 'selected' : ''}>背景高亮</option>
+                                    <option value="ul" ${cfg.keywordHighlightStyle === 'ul' ? 'selected' : ''}>下划线</option>
+                                    <option value="wave" ${cfg.keywordHighlightStyle === 'wave' ? 'selected' : ''}>波浪线</option>
+                                    <option value="dot" ${cfg.keywordHighlightStyle === 'dot' ? 'selected' : ''}>重点点标</option>
+                                    <option value="bd" ${cfg.keywordHighlightStyle === 'bd' ? 'selected' : ''}>加粗强调</option>
+                                </select>
+                            </div>
+                            <div class="xhs-row">
+                                <div style="width:100%;">
+                                    <div>关键词词库</div>
+                                    <div class="xhs-desc">一行一个关键词，最多 200 个（当前 ${keywordLexiconCount} 个）</div>
+                                    <textarea class="xhs-input xhs-textarea" data-input-text="keywordHighlightLexicon" placeholder="例如：&#10;奖学金&#10;保研&#10;租房">${keywordLexiconText}</textarea>
+                                    <div class="xhs-inline-actions">
+                                        <button class="xhs-btn xhs-mini-btn" type="button" data-action="saveKeywordLexicon">保存词库</button>
+                                        <button class="xhs-btn xhs-mini-btn" type="button" data-action="restoreKeywordLexicon">恢复默认词库</button>
+                                        <button class="xhs-btn xhs-mini-btn" type="button" data-action="clearKeywordLexicon">清空词库</button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="xhs-row">
                                 <div>
@@ -4810,6 +6014,15 @@
                         App.applyConfig();
                     };
                 });
+                panel.querySelectorAll('textarea.xhs-input[data-input-text]').forEach((textarea) => {
+                    textarea.onchange = () => {
+                        const k = textarea.getAttribute('data-input-text');
+                        if (!k) return;
+                        Config.set(k, String(textarea.value || ''));
+                        render();
+                        App.applyConfig();
+                    };
+                });
                 panel.querySelectorAll('select.xhs-input[data-select]').forEach((sel) => {
                     sel.onchange = () => {
                         const k = sel.getAttribute('data-select');
@@ -4818,6 +6031,54 @@
                         render();
                         App.applyConfig();
                     };
+                });
+                panel.querySelectorAll('[data-action="setTextCoverStyle"][data-style]').forEach((btn) => {
+                    btn.addEventListener('click', () => {
+                        const style = String(btn.getAttribute('data-style') || '').trim();
+                        const allowed = new Set(['classic', 'notebook', 'glass', 'collage', 'mix_custom']);
+                        if (!allowed.has(style)) return;
+                        Config.set('textCoverStyle', style);
+                        render();
+                        App.applyConfig();
+                    });
+                });
+                panel.querySelector('[data-action="saveKeywordLexicon"]')?.addEventListener('click', () => {
+                    const textarea = panel.querySelector('textarea.xhs-input[data-input-text="keywordHighlightLexicon"]');
+                    if (!textarea) return;
+                    Config.set('keywordHighlightLexicon', String(textarea.value || ''));
+                    render();
+                    App.applyConfig();
+                });
+                panel.querySelector('[data-action="restoreKeywordLexicon"]')?.addEventListener('click', () => {
+                    Config.set('keywordHighlightLexicon', Config.defaults.keywordHighlightLexicon || '');
+                    render();
+                    App.applyConfig();
+                });
+                panel.querySelector('[data-action="clearKeywordLexicon"]')?.addEventListener('click', () => {
+                    if (!confirm('确定清空关键词词库吗？清空后将不再对摘要文本做关键词强调。')) return;
+                    Config.set('keywordHighlightLexicon', '');
+                    render();
+                    App.applyConfig();
+                });
+                panel.querySelectorAll('[data-action="toggleTextCoverMixStyle"][data-style]').forEach((btn) => {
+                    btn.addEventListener('click', () => {
+                        const style = String(btn.getAttribute('data-style') || '').trim();
+                        const allowed = ['classic', 'notebook', 'glass', 'collage'];
+                        if (!allowed.includes(style)) return;
+                        const cfg2 = Config.get();
+                        const current = Config.normalizeTextCoverMixPool(cfg2.textCoverMixPool);
+                        const set = new Set(current);
+                        if (set.has(style)) {
+                            if (set.size <= 1) return;
+                            set.delete(style);
+                        } else {
+                            set.add(style);
+                        }
+                        const next = allowed.filter((name) => set.has(name));
+                        Config.set('textCoverMixPool', next);
+                        render();
+                        App.applyConfig();
+                    });
                 });
                 panel.querySelectorAll('.xhs-color-item[data-color]').forEach((item) => {
                     item.onclick = () => {
